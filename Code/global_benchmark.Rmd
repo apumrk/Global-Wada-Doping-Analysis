@@ -1,0 +1,539 @@
+---
+title: "global_benchmark"
+output: html_document
+date: "2026-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r}
+library(tidyverse)
+library(janitor)
+
+```
+
+
+```{r}
+# ============================================================
+# WADA global benchmark files, 2016-2024
+# Inputs:
+#   wada_testing_sport_year_2016_2024_final_sport_names.csv
+#   wada_adrv_sport_year_2016_2023_cleaned_for_testing_join.csv
+# Outputs:
+#   wada_global_sport_year_benchmark_2016_2024.csv
+#   wada_global_year_benchmark_2016_2024.csv
+# ============================================================
+
+base_dir <- "C:/Users/Apu/Desktop/asl/rstudio files/seminar/project1/data"
+
+testing_file <- file.path(base_dir, "wada_testing_sport_year_2016_2024.csv")
+adrv_file <- file.path(base_dir, "wada_adrv_sport_year_2016_2023.csv")
+out_dir <- file.path(base_dir, "wada_global_benchmark_2016_2024")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+safe_div <- function(num, den) {
+  if_else(!is.na(den) & den != 0, num / den, NA_real_)
+}
+
+clean_num <- function(x) {
+  x %>%
+    as.character() %>%
+    str_replace_all(",", "") %>%
+    str_replace_all("%", "") %>%
+    str_replace_all("−|–|—", "-") %>%
+    str_trim() %>%
+    na_if("") %>%
+    na_if("-") %>%
+    as.numeric()
+}
+
+
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 1. Read input files
+# ------------------------------------------------------------
+
+testing <- read_csv(testing_file, show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate(
+    year = as.integer(year),
+    sport_clean = str_trim(as.character(sport_clean)),
+    across(
+      c(total_samples, in_competition_samples, out_competition_samples,
+        urine_samples, blood_samples, dbs_samples, aaf_count),
+      clean_num
+    )
+  ) %>%
+  filter(year >= 2016, year <= 2024)
+
+adrv <- read_csv(adrv_file, show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate(
+    year = as.integer(year),
+    sport_clean = str_trim(as.character(sport_clean)),
+    across(
+      c(analytical_adrv_count, non_analytical_adrv_count_sport_allocated,
+        total_adrv_count_sport_allocated, aaf_outcome_total,
+        medical_reasons_count, no_case_to_answer_count, no_sanction_count,
+        pending_count, aaf_to_analytical_adrv_rate),
+      clean_num
+    )
+  ) %>%
+  filter(year >= 2016, year <= 2023)
+
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 2. Prepare sport-year benchmark
+# ------------------------------------------------------------
+
+# The main benchmark is testing-base, because Germany will be compared against
+# global testing denominators. ADRV rows without a same-year testing denominator
+# are saved as an audit file and still included in the year-level ADRV totals.
+
+testing_bench <- testing %>%
+  transmute(
+    year,
+    sport_clean,
+    germany_comparison_join_key = sport_clean,
+    
+    global_testing_old_sport_names = old_sport_names,
+    global_testing_sport_group_tables = sport_group_tables,
+    
+    global_total_samples = total_samples,
+    global_in_competition_samples = in_competition_samples,
+    global_out_competition_samples = out_competition_samples,
+    global_urine_samples = urine_samples,
+    global_blood_samples = blood_samples,
+    global_dbs_samples = dbs_samples,
+    global_aaf_count = aaf_count,
+    
+    global_testing_n_source_rows = n_source_rows,
+    global_testing_source_reports = source_reports,
+    global_testing_source_files = source_files,
+    global_testing_source_level_split_issues = source_level_split_issues,
+    
+    global_testing_row_present = TRUE
+  )
+
+adrv_bench <- adrv %>%
+  transmute(
+    year,
+    sport_clean,
+    
+    global_adrv_old_sport_names = old_adrv_sport_names,
+    global_adrv_n_source_rows = n_adrv_source_rows,
+    global_adrv_sport_raw_sources = sport_raw_sources,
+    global_adrv_sport_category_sources = sport_category_sources,
+    global_adrv_source_tables = source_tables,
+    
+    global_adrv_report_aaf_outcome_total = aaf_outcome_total,
+    global_medical_reasons_count = medical_reasons_count,
+    global_no_case_to_answer_count = no_case_to_answer_count,
+    global_no_sanction_count = no_sanction_count,
+    global_pending_count = pending_count,
+    
+    global_analytical_adrv_count = analytical_adrv_count,
+    global_non_analytical_adrv_count_sport_allocated =
+      non_analytical_adrv_count_sport_allocated,
+    global_total_adrv_count_sport_allocated =
+      total_adrv_count_sport_allocated,
+    
+    global_adrv_report_aaf_to_analytical_adrv_rate =
+      aaf_to_analytical_adrv_rate,
+    
+    global_has_aaf_outcome_data = has_aaf_outcome_data,
+    global_has_non_analytical_adrv_data = has_non_analytical_adrv_data,
+    
+    global_adrv_report_row_present = TRUE
+  )
+
+# ADRV rows that cannot be joined to global testing denominators
+unmatched_adrv <- anti_join(
+  adrv_bench,
+  testing_bench,
+  by = c("year", "sport_clean")
+)
+
+write_csv(
+  unmatched_adrv,
+  file.path(out_dir, "wada_global_benchmark_adrv_rows_not_in_testing.csv")
+)
+
+# Full ADRV year totals, including rows that are not joinable to testing
+adrv_full_year_totals <- adrv %>%
+  group_by(year) %>%
+  summarise(
+    global_year_analytical_adrvs_all_adrv_rows =
+      sum(analytical_adrv_count, na.rm = TRUE),
+    
+    global_year_non_analytical_adrvs_sport_allocated_all_adrv_rows =
+      sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    
+    global_year_total_adrvs_sport_allocated_all_adrv_rows =
+      sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+adrv_available_years <- sort(unique(adrv$year))
+
+sport_year_benchmark <- testing_bench %>%
+  left_join(adrv_bench, by = c("year", "sport_clean")) %>%
+  left_join(adrv_full_year_totals, by = "year") %>%
+  mutate(
+    global_adrv_report_row_present =
+      replace_na(global_adrv_report_row_present, FALSE),
+    
+    global_adrv_data_available = year %in% adrv_available_years
+  ) %>%
+  mutate(
+    across(
+      c(
+        global_adrv_report_aaf_outcome_total,
+        global_medical_reasons_count,
+        global_no_case_to_answer_count,
+        global_no_sanction_count,
+        global_pending_count,
+        global_analytical_adrv_count,
+        global_non_analytical_adrv_count_sport_allocated,
+        global_total_adrv_count_sport_allocated
+      ),
+      ~ if_else(
+        global_adrv_data_available,
+        replace_na(as.numeric(.x), 0),
+        NA_real_
+      )
+    ),
+    
+    global_aaf_rate_per_1000_tests =
+      safe_div(global_aaf_count, global_total_samples) * 1000,
+    
+    global_in_competition_share =
+      safe_div(global_in_competition_samples, global_total_samples),
+    
+    global_out_competition_share =
+      safe_div(global_out_competition_samples, global_total_samples),
+    
+    global_urine_share =
+      safe_div(global_urine_samples, global_total_samples),
+    
+    global_blood_share =
+      safe_div(global_blood_samples, global_total_samples),
+    
+    global_dbs_share =
+      safe_div(global_dbs_samples, global_total_samples)
+  ) %>%
+  group_by(year) %>%
+  mutate(
+    global_year_total_samples =
+      sum(global_total_samples, na.rm = TRUE),
+    
+    global_year_aaf_count =
+      sum(global_aaf_count, na.rm = TRUE),
+    
+    global_year_aaf_rate_per_1000_tests =
+      safe_div(global_year_aaf_count, global_year_total_samples) * 1000,
+    
+    global_testing_share =
+      safe_div(global_total_samples, global_year_total_samples),
+    
+    global_aaf_share =
+      safe_div(global_aaf_count, global_year_aaf_count),
+    
+    # ADRV total from rows that successfully joined to testing
+    global_year_total_adrvs_sport_allocated_joinable_to_testing = if_else(
+      global_adrv_data_available,
+      sum(global_total_adrv_count_sport_allocated, na.rm = TRUE),
+      NA_real_
+    ),
+    
+    # ADRV total from the full ADRV file, including non-joinable sport rows
+    global_year_total_adrvs_sport_allocated = if_else(
+      global_adrv_data_available,
+      first(global_year_total_adrvs_sport_allocated_all_adrv_rows),
+      NA_real_
+    ),
+    
+    global_year_analytical_adrvs = if_else(
+      global_adrv_data_available,
+      first(global_year_analytical_adrvs_all_adrv_rows),
+      NA_real_
+    ),
+    
+    global_year_non_analytical_adrvs_sport_allocated = if_else(
+      global_adrv_data_available,
+      first(global_year_non_analytical_adrvs_sport_allocated_all_adrv_rows),
+      NA_real_
+    ),
+    
+    global_adrv_share_sport_allocated =
+      safe_div(
+        global_total_adrv_count_sport_allocated,
+        global_year_total_adrvs_sport_allocated
+      ),
+    
+    global_adrv_rate_per_1000_tests =
+      safe_div(
+        global_total_adrv_count_sport_allocated,
+        global_total_samples
+      ) * 1000,
+    
+    global_analytical_adrv_rate_per_1000_tests =
+      safe_div(
+        global_analytical_adrv_count,
+        global_total_samples
+      ) * 1000,
+    
+    global_non_analytical_adrv_rate_per_1000_tests =
+      safe_div(
+        global_non_analytical_adrv_count_sport_allocated,
+        global_total_samples
+      ) * 1000,
+    
+    global_year_adrv_rate_per_1000_tests =
+      safe_div(
+        global_year_total_adrvs_sport_allocated,
+        global_year_total_samples
+      ) * 1000,
+    
+    global_adrv_rate_index_vs_year =
+      safe_div(
+        global_adrv_rate_per_1000_tests,
+        global_year_adrv_rate_per_1000_tests
+      ),
+    
+    global_testing_aaf_to_analytical_adrv_rate =
+      safe_div(global_analytical_adrv_count, global_aaf_count),
+    
+    global_testing_vs_adrv_gap =
+      global_adrv_share_sport_allocated - global_testing_share,
+    
+    global_adrv_to_testing_share_ratio =
+      safe_div(
+        global_adrv_share_sport_allocated,
+        global_testing_share
+      ),
+    
+    global_testing_volume_rank_in_year =
+      min_rank(desc(global_total_samples)),
+    
+    global_aaf_count_rank_in_year =
+      min_rank(desc(global_aaf_count)),
+    
+    global_adrv_count_rank_in_year =
+      min_rank(desc(global_total_adrv_count_sport_allocated)),
+    
+    benchmark_min_100_tests =
+      global_total_samples >= 100,
+    
+    benchmark_min_500_tests =
+      global_total_samples >= 500,
+    
+    benchmark_min_1000_tests =
+      global_total_samples >= 1000,
+    
+    # FIXED:
+    # Rank is calculated only among sports with at least 100 tests.
+    # This avoids rank gaps caused by low-testing sports being ranked first
+    # and then removed afterwards.
+    global_adrv_rate_rank_min_100_tests_in_year = if_else(
+      benchmark_min_100_tests & global_adrv_data_available,
+      min_rank(desc(if_else(
+        benchmark_min_100_tests,
+        global_adrv_rate_per_1000_tests,
+        NA_real_
+      ))),
+      NA_integer_
+    ),
+    
+    # FIXED:
+    # Same logic for AAF-rate ranking.
+    global_aaf_rate_rank_min_100_tests_in_year = if_else(
+      benchmark_min_100_tests,
+      min_rank(desc(if_else(
+        benchmark_min_100_tests,
+        global_aaf_rate_per_1000_tests,
+        NA_real_
+      ))),
+      NA_integer_
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    usable_for_testing_benchmark =
+      !is.na(global_total_samples) & global_total_samples > 0,
+    
+    usable_for_adrv_rate_benchmark =
+      usable_for_testing_benchmark & global_adrv_data_available,
+    
+    adrv_counts_filled_zero_because_no_sport_report_row =
+      global_adrv_data_available & !global_adrv_report_row_present
+  ) %>%
+  arrange(year, global_testing_volume_rank_in_year, sport_clean)
+
+write_csv(
+  sport_year_benchmark,
+  file.path(out_dir, "wada_global_sport_year_benchmark_2016_2024.csv")
+)
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 3. Year-level benchmark
+# ------------------------------------------------------------
+
+official_totals <- tribble(
+  ~year, ~global_official_total_adrvs_including_non_sport, ~global_official_total_note,
+  2016, 1595, "Official total includes 21 athlete support personnel cases not allocated by sport.",
+  2017, 1804, "Official total includes 28 athlete support personnel cases; sport-detail analytical rows are 2 below official analytical total.",
+  2018, 1923, "Official total includes 16 athlete support personnel cases; report has minor one-case wording inconsistency.",
+  2019, 1914, "Official total includes 26 athlete support personnel cases not allocated by sport.",
+  2020, 935,  "Official total includes 25 athlete support personnel cases not allocated by sport.",
+  2021, 1388, "Official total uses Executive Summary logic with 32 athlete support personnel cases; sport-level file excludes ASP.",
+  2022, 1652, "Official total includes 31 athlete support personnel cases not allocated by sport.",
+  2023, 2005, "Official total includes 8 non-sport/Unknown ASP cases excluded from sport benchmark.",
+  2024, NA_real_, "ADRV report not available in this dataset."
+)
+
+year_testing <- sport_year_benchmark %>%
+  group_by(year) %>%
+  summarise(
+    global_adrv_data_available = first(global_adrv_data_available),
+    global_total_samples = sum(global_total_samples, na.rm = TRUE),
+    global_in_competition_samples = sum(global_in_competition_samples, na.rm = TRUE),
+    global_out_competition_samples = sum(global_out_competition_samples, na.rm = TRUE),
+    global_urine_samples = sum(global_urine_samples, na.rm = TRUE),
+    global_blood_samples = sum(global_blood_samples, na.rm = TRUE),
+    global_dbs_samples = sum(global_dbs_samples, na.rm = TRUE),
+    global_aaf_count = sum(global_aaf_count, na.rm = TRUE),
+    global_total_adrv_count_sport_allocated_joinable_to_testing = if_else(
+      first(global_adrv_data_available),
+      sum(global_total_adrv_count_sport_allocated, na.rm = TRUE),
+      NA_real_
+    ),
+    global_sports_tested = n_distinct(sport_clean),
+    global_sports_with_aafs = sum(global_aaf_count > 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+year_adrv_full <- adrv %>%
+  group_by(year) %>%
+  summarise(
+    global_analytical_adrv_count = sum(analytical_adrv_count, na.rm = TRUE),
+    global_non_analytical_adrv_count_sport_allocated =
+      sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    global_total_adrv_count_sport_allocated = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    global_sports_with_adrv_report_row = n_distinct(sport_clean),
+    global_sports_with_adrvs = sum(total_adrv_count_sport_allocated > 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+year_benchmark <- year_testing %>%
+  left_join(year_adrv_full, by = "year") %>%
+  mutate(
+    global_aaf_rate_per_1000_tests = safe_div(global_aaf_count, global_total_samples) * 1000,
+    global_adrv_rate_per_1000_tests_sport_allocated =
+      safe_div(global_total_adrv_count_sport_allocated, global_total_samples) * 1000,
+    global_analytical_adrv_rate_per_1000_tests =
+      safe_div(global_analytical_adrv_count, global_total_samples) * 1000,
+    global_non_analytical_adrv_rate_per_1000_tests_sport_allocated =
+      safe_div(global_non_analytical_adrv_count_sport_allocated, global_total_samples) * 1000,
+    global_in_competition_share = safe_div(global_in_competition_samples, global_total_samples),
+    global_out_competition_share = safe_div(global_out_competition_samples, global_total_samples),
+    global_urine_share = safe_div(global_urine_samples, global_total_samples),
+    global_blood_share = safe_div(global_blood_samples, global_total_samples),
+    global_dbs_share = safe_div(global_dbs_samples, global_total_samples),
+    global_sports_with_100plus_tests = map_int(year, ~ sum(sport_year_benchmark$year == .x & sport_year_benchmark$global_total_samples >= 100, na.rm = TRUE)),
+    global_sports_with_1000plus_tests = map_int(year, ~ sum(sport_year_benchmark$year == .x & sport_year_benchmark$global_total_samples >= 1000, na.rm = TRUE))
+  ) %>%
+  left_join(official_totals, by = "year") %>%
+  mutate(
+    global_official_minus_sport_allocated_adrvs =
+      global_official_total_adrvs_including_non_sport - global_total_adrv_count_sport_allocated
+  ) %>%
+  select(
+    year, global_adrv_data_available,
+    global_total_samples, global_in_competition_samples, global_out_competition_samples,
+    global_urine_samples, global_blood_samples, global_dbs_samples,
+    global_aaf_count, global_aaf_rate_per_1000_tests,
+    global_in_competition_share, global_out_competition_share,
+    global_urine_share, global_blood_share, global_dbs_share,
+    global_analytical_adrv_count, global_non_analytical_adrv_count_sport_allocated,
+    global_total_adrv_count_sport_allocated,
+    global_total_adrv_count_sport_allocated_joinable_to_testing,
+    global_official_total_adrvs_including_non_sport,
+    global_official_minus_sport_allocated_adrvs,
+    global_adrv_rate_per_1000_tests_sport_allocated,
+    global_analytical_adrv_rate_per_1000_tests,
+    global_non_analytical_adrv_rate_per_1000_tests_sport_allocated,
+    global_sports_tested, global_sports_with_aafs, global_sports_with_adrv_report_row,
+    global_sports_with_adrvs, global_sports_with_100plus_tests, global_sports_with_1000plus_tests,
+    global_official_total_note
+  )
+
+write_csv(year_benchmark, file.path(out_dir, "wada_global_year_benchmark_2016_2024.csv"))
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 4. Validation summary
+# ------------------------------------------------------------
+
+validation_summary <- year_benchmark %>%
+  select(year, global_total_samples, global_aaf_count,
+         global_analytical_adrv_count,
+         global_non_analytical_adrv_count_sport_allocated,
+         global_total_adrv_count_sport_allocated,
+         global_sports_tested, global_sports_with_adrv_report_row) %>%
+  left_join(
+    testing %>%
+      group_by(year) %>%
+      summarise(
+        expected_testing_rows = n(),
+        expected_total_samples = sum(total_samples, na.rm = TRUE),
+        expected_aaf_count = sum(aaf_count, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = "year"
+  ) %>%
+  left_join(
+    adrv %>%
+      group_by(year) %>%
+      summarise(
+        expected_adrv_rows = n(),
+        expected_analytical_adrvs = sum(analytical_adrv_count, na.rm = TRUE),
+        expected_non_analytical_adrvs = sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+        expected_total_adrvs = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = "year"
+  ) %>%
+  mutate(
+    sample_diff_vs_testing_file = global_total_samples - expected_total_samples,
+    aaf_diff_vs_testing_file = global_aaf_count - expected_aaf_count,
+    analytical_adrv_diff_vs_adrv_file = global_analytical_adrv_count - expected_analytical_adrvs,
+    non_analytical_adrv_diff_vs_adrv_file = global_non_analytical_adrv_count_sport_allocated - expected_non_analytical_adrvs,
+    total_adrv_diff_vs_adrv_file = global_total_adrv_count_sport_allocated - expected_total_adrvs,
+    unmatched_adrv_rows_not_in_sport_year_benchmark = map_int(year, ~ sum(unmatched_adrv$year == .x))
+  )
+
+write_csv(validation_summary, file.path(out_dir, "wada_global_benchmark_validation_summary.csv"))
+
+cat("Saved global benchmark files in:", out_dir, "\n")
+
+```
+
+
+
+

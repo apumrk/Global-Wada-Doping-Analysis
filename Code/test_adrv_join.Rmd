@@ -1,0 +1,276 @@
+---
+title: "test & adrv join"
+output: html_document
+date: "2026-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(tidyverse)
+library(janitor)
+# ============================================================
+# Project 1: Join WADA Testing Figures + WADA ADRV data
+# Output: wada_testing_adrv_sport_year_2016_2023_joined_analysis.csv
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. File paths
+# ------------------------------------------------------------
+
+base_dir <- "C:/Users/Apu/Desktop/asl/rstudio files/seminar/project1/data"
+
+input_testing <- file.path(base_dir, "wada_testing_sport_year_2016_2024_final_sport_names.csv")
+input_adrv <- file.path(base_dir, "wada_adrv_sport_year_2016_2023_cleaned_for_testing_join.csv")
+
+out_dir <- file.path(base_dir, "wada_testing_adrv_2016_2023_joined_analysis")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+output_joined <- file.path(out_dir, "wada_testing_adrv_sport_year_2016_2023_joined_analysis.csv")
+output_validation <- file.path(out_dir, "wada_testing_adrv_join_validation_summary.csv")
+output_unmatched_adrv <- file.path(out_dir, "wada_testing_adrv_unmatched_adrv_rows.csv")
+output_testing_only <- file.path(out_dir, "wada_testing_adrv_testing_rows_without_adrv_report_row.csv")
+
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 2. Helper functions
+# ------------------------------------------------------------
+
+safe_div <- function(num, den) {
+  if_else(!is.na(den) & den != 0, num / den, NA_real_)
+}
+
+check_duplicate_keys <- function(df, dataset_name) {
+  duplicate_rows <- df %>%
+    count(year, sport_clean) %>%
+    filter(n > 1)
+  
+  if (nrow(duplicate_rows) > 0) {
+    print(duplicate_rows)
+    stop(paste(dataset_name, "has duplicate year + sport_clean keys."))
+  }
+}
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 3. Read and prepare inputs
+# ------------------------------------------------------------
+
+testing <- read_csv(input_testing, show_col_types = FALSE) %>%
+  clean_names() %>%
+  filter(year >= 2016, year <= 2023) %>%
+  rename(
+    testing_old_sport_names = old_sport_names,
+    testing_n_source_rows = n_source_rows,
+    testing_sport_group_tables = sport_group_tables,
+    testing_source_reports = source_reports,
+    testing_source_files = source_files,
+    testing_source_level_split_issues = source_level_split_issues
+  ) %>%
+  mutate(testing_row_present = TRUE)
+
+adrv <- read_csv(input_adrv, show_col_types = FALSE) %>%
+  clean_names() %>%
+  filter(year >= 2016, year <= 2023) %>%
+  rename(
+    adrv_old_sport_names = old_adrv_sport_names,
+    adrv_n_source_rows = n_adrv_source_rows,
+    adrv_testing_sport_match_same_year_prejoin = testing_sport_match_same_year,
+    adrv_sport_raw_sources = sport_raw_sources,
+    adrv_sport_category_sources = sport_category_sources,
+    adrv_source_tables = source_tables,
+    adrv_report_total_samples_aaf_outcome = total_samples_aaf_outcome,
+    adrv_report_aaf_outcome_total = aaf_outcome_total,
+    adrv_source_file = source_file,
+    adrv_source_year = source_year,
+    adrv_source_report = source_report
+  ) %>%
+  mutate(adrv_report_row_present = TRUE)
+
+check_duplicate_keys(testing, "Testing dataset")
+check_duplicate_keys(adrv, "ADRV dataset")
+
+```
+
+```{r}
+
+# ------------------------------------------------------------
+# 4. Full join
+# ------------------------------------------------------------
+
+joined <- full_join(
+  testing,
+  adrv,
+  by = c("year", "sport_clean")
+) %>%
+  mutate(
+    testing_row_present = replace_na(testing_row_present, FALSE),
+    adrv_report_row_present = replace_na(adrv_report_row_present, FALSE),
+    match_status = case_when(
+      testing_row_present & adrv_report_row_present ~ "matched",
+      testing_row_present & !adrv_report_row_present ~ "testing_only_no_adrv_row",
+      !testing_row_present & adrv_report_row_present ~ "adrv_only_no_testing_row",
+      TRUE ~ "check"
+    )
+  )
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 5. Fill ADRV counts for tested sports absent from ADRV report
+# ------------------------------------------------------------
+
+adrv_count_cols <- c(
+  "medical_reasons_count",
+  "no_case_to_answer_count",
+  "no_sanction_count",
+  "pending_count",
+  "analytical_adrv_count",
+  "non_analytical_adrv_count_sport_allocated",
+  "total_adrv_count_sport_allocated",
+  "adrv_report_total_samples_aaf_outcome",
+  "adrv_report_aaf_outcome_total"
+)
+
+joined <- joined %>%
+  mutate(
+    across(all_of(adrv_count_cols), ~ replace_na(as.numeric(.x), 0)),
+    across(
+      any_of(c(
+        "has_aaf_outcome_data",
+        "has_non_analytical_adrv_data",
+        "adrv_testing_sport_match_same_year_prejoin"
+      )),
+      ~ replace_na(.x, FALSE)
+    )
+  )
+
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 6. Recalculate yearly totals, rates, shares, and mismatch metrics
+# ------------------------------------------------------------
+
+joined <- joined %>%
+  group_by(year) %>%
+  mutate(
+    joined_yearly_total_samples = sum(total_samples, na.rm = TRUE),
+    joined_yearly_total_aafs = sum(aaf_count, na.rm = TRUE),
+    joined_yearly_adrv_report_aaf_outcome_total = sum(adrv_report_aaf_outcome_total, na.rm = TRUE),
+    joined_yearly_analytical_adrvs = sum(analytical_adrv_count, na.rm = TRUE),
+    joined_yearly_non_analytical_adrvs_sport_allocated =
+      sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    joined_yearly_total_adrvs_sport_allocated =
+      sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    
+    testing_share_recalc = safe_div(total_samples, joined_yearly_total_samples),
+    aaf_share_recalc = safe_div(aaf_count, joined_yearly_total_aafs),
+    adrv_share_sport_allocated_recalc =
+      safe_div(total_adrv_count_sport_allocated, joined_yearly_total_adrvs_sport_allocated),
+    analytical_adrv_share_recalc =
+      safe_div(analytical_adrv_count, joined_yearly_analytical_adrvs),
+    non_analytical_adrv_share_sport_allocated_recalc =
+      safe_div(non_analytical_adrv_count_sport_allocated,
+               joined_yearly_non_analytical_adrvs_sport_allocated),
+    
+    aaf_rate_per_1000_tests = safe_div(aaf_count, total_samples) * 1000,
+    adrv_rate_per_1000_tests = safe_div(total_adrv_count_sport_allocated, total_samples) * 1000,
+    analytical_adrv_rate_per_1000_tests = safe_div(analytical_adrv_count, total_samples) * 1000,
+    non_analytical_adrv_rate_per_1000_tests =
+      safe_div(non_analytical_adrv_count_sport_allocated, total_samples) * 1000,
+    
+    analytical_adrv_per_testing_aaf = safe_div(analytical_adrv_count, aaf_count),
+    total_adrv_per_testing_aaf = safe_div(total_adrv_count_sport_allocated, aaf_count),
+    
+    yearly_overall_aaf_rate_per_1000_tests =
+      safe_div(joined_yearly_total_aafs, joined_yearly_total_samples) * 1000,
+    yearly_overall_adrv_rate_per_1000_tests =
+      safe_div(joined_yearly_total_adrvs_sport_allocated, joined_yearly_total_samples) * 1000,
+    
+    aaf_rate_index_vs_year =
+      safe_div(aaf_rate_per_1000_tests, yearly_overall_aaf_rate_per_1000_tests),
+    adrv_rate_index_vs_year =
+      safe_div(adrv_rate_per_1000_tests, yearly_overall_adrv_rate_per_1000_tests),
+    
+    testing_vs_aaf_gap = aaf_share_recalc - testing_share_recalc,
+    testing_vs_adrv_gap = adrv_share_sport_allocated_recalc - testing_share_recalc,
+    aaf_to_testing_share_ratio = safe_div(aaf_share_recalc, testing_share_recalc),
+    adrv_to_testing_share_ratio = safe_div(adrv_share_sport_allocated_recalc, testing_share_recalc),
+    log2_aaf_to_testing_share_ratio = if_else(aaf_to_testing_share_ratio > 0,
+                                              log2(aaf_to_testing_share_ratio), NA_real_),
+    log2_adrv_to_testing_share_ratio = if_else(adrv_to_testing_share_ratio > 0,
+                                               log2(adrv_to_testing_share_ratio), NA_real_),
+    
+    include_in_testing_rate_analysis = testing_row_present & !is.na(total_samples) & total_samples > 0,
+    include_in_testing_vs_adrv_share_analysis = testing_row_present,
+    adrv_values_filled_zero_from_absent_report_row =
+      testing_row_present & !adrv_report_row_present,
+    aaf_count_diff_testing_vs_adrv_report = aaf_count - adrv_report_aaf_outcome_total
+  ) %>%
+  ungroup()
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 7. Sort and save outputs
+# ------------------------------------------------------------
+
+joined <- joined %>%
+  mutate(
+    status_order = case_when(
+      match_status == "matched" ~ 1,
+      match_status == "testing_only_no_adrv_row" ~ 2,
+      match_status == "adrv_only_no_testing_row" ~ 3,
+      TRUE ~ 9
+    )
+  ) %>%
+  arrange(year, status_order, desc(total_adrv_count_sport_allocated), desc(total_samples), sport_clean) %>%
+  select(-status_order)
+
+validation <- joined %>%
+  group_by(year) %>%
+  summarise(
+    rows = n(),
+    testing_rows = sum(testing_row_present),
+    adrv_rows = sum(adrv_report_row_present),
+    matched_rows = sum(match_status == "matched"),
+    testing_only_rows = sum(match_status == "testing_only_no_adrv_row"),
+    adrv_only_rows = sum(match_status == "adrv_only_no_testing_row"),
+    total_samples = sum(total_samples, na.rm = TRUE),
+    testing_aaf_count = sum(aaf_count, na.rm = TRUE),
+    adrv_report_aaf_outcome_total = sum(adrv_report_aaf_outcome_total, na.rm = TRUE),
+    analytical_adrv_count = sum(analytical_adrv_count, na.rm = TRUE),
+    non_analytical_adrv_count_sport_allocated =
+      sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    total_adrv_count_sport_allocated =
+      sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    testing_share_sum = sum(testing_share_recalc, na.rm = TRUE),
+    aaf_share_sum = sum(aaf_share_recalc, na.rm = TRUE),
+    adrv_share_sum = sum(adrv_share_sport_allocated_recalc, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+write_csv(joined, output_joined)
+write_csv(validation, output_validation)
+write_csv(joined %>% filter(match_status == "adrv_only_no_testing_row"), output_unmatched_adrv)
+write_csv(joined %>% filter(match_status == "testing_only_no_adrv_row"), output_testing_only)
+
+print(validation)
+cat("\nJoined analysis file saved to:\n", output_joined, "\n")
+
+```
+

@@ -1,0 +1,865 @@
+---
+title: "data_processing_wada"
+output: html_document
+date: "2026-06-01"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(stringr)
+```
+```{r}
+
+# ------------------------------------------------------------
+# 1. Set folder path
+# ------------------------------------------------------------
+# Folder where my CSV files are stored
+base_dir <- "C:/Users/Apu/Desktop/asl/rstudio files/seminar/project1/data"
+
+# Optional: create output folder
+out_dir <- file.path(base_dir, "combined")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 2. Find only the sport_totals files
+# ------------------------------------------------------------
+
+sport_total_files <- list.files(
+  path = base_dir,
+  pattern = "wada_testing_[0-9]{4}_sport_totals\\.csv$",
+  full.names = TRUE,
+  recursive = TRUE
+)
+
+# Sort files by year
+get_year_from_file <- function(x) {
+  as.integer(str_extract(basename(x), "[0-9]{4}"))
+}
+
+sport_total_files <- sport_total_files[order(get_year_from_file(sport_total_files))]
+
+# Check files found
+print(sport_total_files)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 3. Combine raw files WITHOUT changing columns
+# ------------------------------------------------------------
+
+wada_raw_with_source <- map_dfr(
+  sport_total_files,
+  function(file_path) {
+    read_csv(file_path, show_col_types = FALSE) %>%
+      mutate(
+        source_file = basename(file_path),
+        source_year = get_year_from_file(file_path)
+      )
+  }
+)
+
+# Raw combined file without source-file columns
+wada_raw_combined <- wada_raw_with_source %>%
+  select(-source_file, -source_year)
+
+# Save raw combined files
+write_csv(
+  wada_raw_combined,
+  file.path(out_dir, "wada_testing_sport_year_2016_2024_raw_combined.csv")
+)
+
+write_csv(
+  wada_raw_with_source,
+  file.path(out_dir, "wada_testing_sport_year_2016_2024_raw_combined_with_source.csv")
+)
+
+```
+
+
+
+```{r}
+# ------------------------------------------------------------
+# 4. Create standardized source-level file
+# ------------------------------------------------------------
+
+wada_clean <- wada_raw_with_source %>%
+  clean_names()
+
+# Helper function to combine year-specific columns
+coalesce_numeric_matching <- function(data, pattern) {
+  cols <- names(data)[str_detect(names(data), pattern)]
+  
+  if (length(cols) == 0) {
+    return(rep(NA_real_, nrow(data)))
+  }
+  
+  cols_data <- data[cols] %>%
+    mutate(across(everything(), as.numeric))
+  
+  do.call(dplyr::coalesce, cols_data)
+}
+
+wada_standardized_source_level <- wada_clean %>%
+  mutate(
+    testing_share = coalesce_numeric_matching(
+      wada_clean,
+      "^testing_share(_[0-9]{4})?$"
+    ),
+    
+    aaf_share_extracted_denominator = coalesce_numeric_matching(
+      wada_clean,
+      "^aaf_share(_[0-9]{4})?_extracted_denominator$|^aaf_share_extracted_denominator$"
+    ),
+    
+    mismatch_score = coalesce_numeric_matching(
+      wada_clean,
+      "^mismatch_score(_[0-9]{4})?$"
+    )
+  ) %>%
+  select(
+    any_of(c(
+      "source_file",
+      "source_year",
+      "year",
+      "sport_raw",
+      "sport_clean",
+      "sport_group_table",
+      "total_samples",
+      "in_competition_samples",
+      "out_competition_samples",
+      "urine_samples",
+      "blood_samples",
+      "dbs_samples",
+      "aaf_count",
+      "aaf_rate",
+      "testing_share",
+      "aaf_share_extracted_denominator",
+      "mismatch_score",
+      "total_samples_calc",
+      "total_samples_reported",
+      "sample_total_check",
+      "aaf_count_calc",
+      "aaf_count_reported",
+      "aaf_total_check",
+      "source_report"
+    ))
+  )
+
+write_csv(
+  wada_standardized_source_level,
+  file.path(out_dir, "wada_testing_sport_year_2016_2024_standardized_source_level.csv")
+)
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 5. Create validation summary
+# ------------------------------------------------------------
+
+validation_summary <- wada_clean %>%
+  group_by(year) %>%
+  summarise(
+    rows = n(),
+    total_samples = sum(total_samples, na.rm = TRUE),
+    aaf_count = sum(aaf_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(year)
+
+write_csv(
+  validation_summary,
+  file.path(out_dir, "wada_testing_sport_year_2016_2024_combination_validation_summary.csv")
+)
+
+# Print validation summary
+print(validation_summary)
+```
+
+```{r}
+cat("\nTotal rows in raw combined file:", nrow(wada_raw_combined), "\n")
+cat("Files saved in:", out_dir, "\n")
+```
+
+```{r}
+# ============================================================
+# Project 1: WADA Testing Figures 2016–2024
+# Cleaning + aggregation script
+# Input: standardized source-level file
+# Output: cleaned source-level + cleaned aggregated sport-year file
+# ============================================================
+
+library(tidyverse)
+library(janitor)
+library(stringr)
+
+# ------------------------------------------------------------
+# 1. File paths
+# ------------------------------------------------------------
+
+base_dir <- "C:/Users/Apu/Desktop/asl/rstudio files/seminar/project1/data"
+
+input_file <- file.path(
+  base_dir,
+  "wada_testing_sport_year_2016_2024_standardized_source_level.csv"
+)
+
+out_dir <- file.path(base_dir, "cleaned")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 2. Read source-level dataset
+# ------------------------------------------------------------
+
+wada_source <- read_csv(input_file, show_col_types = FALSE) %>%
+  clean_names()
+
+glimpse(wada_source)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 3. Helper functions
+# ------------------------------------------------------------
+
+clean_number <- function(x) {
+  if (is.numeric(x)) {
+    return(x)
+  }
+  
+  x %>%
+    as.character() %>%
+    str_replace_all(",", "") %>%
+    str_replace_all("%", "") %>%
+    str_replace_all("−", "-") %>%
+    str_replace_all("–", "-") %>%
+    str_replace_all("—", "-") %>%
+    str_replace_all("^-$", "0") %>%
+    str_trim() %>%
+    na_if("") %>%
+    as.numeric()
+}
+
+normalize_sport_name <- function(x) {
+  x %>%
+    as.character() %>%
+    str_replace_all("\u00A0", " ") %>%      # non-breaking space
+    str_replace_all("‐|-|‒|–|—", "-") %>%  # different hyphen types
+    str_replace_all("\\s*/\\s*", " / ") %>%
+    str_replace_all("\\s*-\\s*", "-") %>%
+    str_replace_all("\\s+", " ") %>%
+    str_trim()
+}
+
+standardize_sport_name <- function(x) {
+  x <- normalize_sport_name(x)
+  
+  case_when(
+    str_to_lower(x) %in% c("armwrestling", "arm wrestling") ~ "Arm Wrestling",
+    str_to_lower(x) %in% c("canoe/kayak", "canoe / kayak", "canoe kayak") ~ "Canoe / Kayak",
+    str_to_lower(x) %in% c("ju-jitsu", "ju jitsu", "ju-jitsu") ~ "Ju-Jitsu",
+    str_to_lower(x) %in% c("para athletics", "para-athletics") ~ "Para-Athletics",
+    str_to_lower(x) %in% c("para swimming", "para-swimming") ~ "Para-Swimming",
+    str_to_lower(x) %in% c("para powerlifting", "para-powerlifting") ~ "Para-Powerlifting",
+    str_to_lower(x) %in% c("para cycling", "para-cycling") ~ "Para-Cycling",
+    str_to_lower(x) %in% c("para archery", "para-archery") ~ "Para-Archery",
+    str_to_lower(x) %in% c("para badminton", "para-badminton") ~ "Para-Badminton",
+    str_to_lower(x) %in% c("para canoe", "para-canoe") ~ "Para-Canoe",
+    str_to_lower(x) %in% c("para equestrian", "para-equestrian") ~ "Para-Equestrian",
+    str_to_lower(x) %in% c("para rowing", "para-rowing") ~ "Para-Rowing",
+    str_to_lower(x) %in% c("para table tennis", "para-table tennis") ~ "Para-Table Tennis",
+    str_to_lower(x) %in% c("para taekwondo", "para-taekwondo") ~ "Para-Taekwondo",
+    str_to_lower(x) %in% c("football 5-a-side", "football 5 a side") ~ "Football 5-a-Side",
+    str_to_lower(x) %in% c("shooting para sport", "shooting para-sport") ~ "Shooting Para Sport",
+    str_to_lower(x) %in% c("dance sport", "dancesport") ~ "DanceSport",
+    str_to_lower(x) %in% c("waterskiing", "water skiing") ~ "Water Skiing",
+    TRUE ~ x
+  )
+}
+
+safe_sum <- function(x) {
+  sum(x, na.rm = TRUE)
+}
+
+safe_first <- function(x) {
+  x <- x[!is.na(x) & x != ""]
+  if (length(x) == 0) {
+    NA_character_
+  } else {
+    x[1]
+  }
+}
+
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & x != ""])
+  if (length(x) == 0) {
+    NA_character_
+  } else {
+    paste(sort(x), collapse = " | ")
+  }
+}
+```
+
+
+```{r}
+# ------------------------------------------------------------
+# 4. Clean numeric columns and sport names
+# ------------------------------------------------------------
+
+numeric_cols <- c(
+  "total_samples",
+  "in_competition_samples",
+  "out_competition_samples",
+  "urine_samples",
+  "blood_samples",
+  "dbs_samples",
+  "aaf_count",
+  "aaf_rate",
+  "testing_share",
+  "aaf_share_extracted_denominator",
+  "mismatch_score",
+  "total_samples_calc",
+  "total_samples_reported",
+  "aaf_count_calc",
+  "aaf_count_reported"
+)
+
+wada_cleaned_source <- wada_source %>%
+  mutate(
+    across(any_of(numeric_cols), clean_number),
+    
+    sport_name_input = case_when(
+      !is.na(sport_clean) & sport_clean != "" ~ sport_clean,
+      !is.na(sport_raw) & sport_raw != "" ~ sport_raw,
+      TRUE ~ NA_character_
+    ),
+    
+    sport_clean_original = sport_clean,
+    sport_clean = standardize_sport_name(sport_name_input),
+    
+    source_year_check = if_else(
+      !is.na(source_year) & !is.na(year),
+      source_year == year,
+      NA
+    ),
+    
+    sample_split_diff = total_samples -
+      coalesce(in_competition_samples, 0) -
+      coalesce(out_competition_samples, 0),
+    
+    material_split_diff = total_samples -
+      coalesce(urine_samples, 0) -
+      coalesce(blood_samples, 0) -
+      coalesce(dbs_samples, 0),
+    
+    sample_split_complete = sample_split_diff == 0,
+    material_split_complete = material_split_diff == 0,
+    
+    split_data_complete = sample_split_complete & material_split_complete,
+    
+    aaf_rate_recalculated = if_else(
+      total_samples > 0,
+      aaf_count / total_samples,
+      NA_real_
+    ),
+    
+    aaf_rate_diff = aaf_rate - aaf_rate_recalculated
+  )
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 5. Sport-name crosswalk
+# ------------------------------------------------------------
+
+sport_name_crosswalk <- wada_cleaned_source %>%
+  distinct(
+    sport_raw,
+    sport_clean_original,
+    sport_clean
+  ) %>%
+  arrange(sport_clean, sport_raw)
+
+write_csv(
+  sport_name_crosswalk,
+  file.path(out_dir, "wada_testing_sport_name_crosswalk.csv")
+)
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 6. Duplicate sport-year report before aggregation
+# ------------------------------------------------------------
+
+duplicate_sport_year_report <- wada_cleaned_source %>%
+  group_by(year, sport_clean) %>%
+  summarise(
+    n_source_rows = n(),
+    sport_groups = collapse_unique(sport_group_table),
+    total_samples = safe_sum(total_samples),
+    aaf_count = safe_sum(aaf_count),
+    .groups = "drop"
+  ) %>%
+  filter(n_source_rows > 1) %>%
+  arrange(year, desc(n_source_rows), sport_clean)
+
+write_csv(
+  duplicate_sport_year_report,
+  file.path(out_dir, "wada_testing_duplicate_sport_year_report.csv")
+)
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 7. Save cleaned source-level file
+# ------------------------------------------------------------
+
+write_csv(
+  wada_cleaned_source,
+  file.path(out_dir, "wada_testing_sport_year_2016_2024_cleaned_source_level.csv")
+)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 8. Aggregate to one row per year + sport_clean
+# ------------------------------------------------------------
+
+wada_aggregated <- wada_cleaned_source %>%
+  group_by(year, sport_clean) %>%
+  summarise(
+    n_source_rows = n(),
+    sport_group_tables = collapse_unique(sport_group_table),
+    source_reports = collapse_unique(source_report),
+    source_files = collapse_unique(source_file),
+    
+    total_samples = safe_sum(total_samples),
+    in_competition_samples = safe_sum(in_competition_samples),
+    out_competition_samples = safe_sum(out_competition_samples),
+    urine_samples = safe_sum(urine_samples),
+    blood_samples = safe_sum(blood_samples),
+    dbs_samples = safe_sum(dbs_samples),
+    aaf_count = safe_sum(aaf_count),
+    
+    source_level_split_issues = sum(!split_data_complete, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) %>%
+  group_by(year) %>%
+  mutate(
+    yearly_total_samples = sum(total_samples, na.rm = TRUE),
+    yearly_total_aafs = sum(aaf_count, na.rm = TRUE),
+    
+    aaf_rate = if_else(
+      total_samples > 0,
+      aaf_count / total_samples,
+      NA_real_
+    ),
+    
+    testing_share = if_else(
+      yearly_total_samples > 0,
+      total_samples / yearly_total_samples,
+      NA_real_
+    ),
+    
+    aaf_share = if_else(
+      yearly_total_aafs > 0,
+      aaf_count / yearly_total_aafs,
+      NA_real_
+    ),
+    
+    mismatch_score = aaf_share - testing_share,
+    
+    sample_split_diff = total_samples -
+      coalesce(in_competition_samples, 0) -
+      coalesce(out_competition_samples, 0),
+    
+    material_split_diff = total_samples -
+      coalesce(urine_samples, 0) -
+      coalesce(blood_samples, 0) -
+      coalesce(dbs_samples, 0),
+    
+    split_data_complete = sample_split_diff == 0 & material_split_diff == 0,
+    
+    in_competition_share = if_else(
+      total_samples > 0,
+      in_competition_samples / total_samples,
+      NA_real_
+    ),
+    
+    out_competition_share = if_else(
+      total_samples > 0,
+      out_competition_samples / total_samples,
+      NA_real_
+    ),
+    
+    urine_share = if_else(
+      total_samples > 0,
+      urine_samples / total_samples,
+      NA_real_
+    ),
+    
+    blood_share = if_else(
+      total_samples > 0,
+      blood_samples / total_samples,
+      NA_real_
+    ),
+    
+    dbs_share = if_else(
+      total_samples > 0,
+      dbs_samples / total_samples,
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(year, desc(total_samples), sport_clean)
+
+write_csv(
+  wada_aggregated,
+  file.path(out_dir, "wada_testing_sport_year_2016_2024_cleaned_aggregated.csv")
+)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 9. Validation summary
+# ------------------------------------------------------------
+
+source_validation <- wada_cleaned_source %>%
+  group_by(year) %>%
+  summarise(
+    source_rows = n(),
+    source_total_samples = sum(total_samples, na.rm = TRUE),
+    source_aaf_count = sum(aaf_count, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+aggregated_validation <- wada_aggregated %>%
+  group_by(year) %>%
+  summarise(
+    aggregated_rows = n(),
+    aggregated_total_samples = sum(total_samples, na.rm = TRUE),
+    aggregated_aaf_count = sum(aaf_count, na.rm = TRUE),
+    testing_share_sum = sum(testing_share, na.rm = TRUE),
+    aaf_share_sum = sum(aaf_share, na.rm = TRUE),
+    mismatch_score_sum = sum(mismatch_score, na.rm = TRUE),
+    rows_with_split_issues = sum(!split_data_complete, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+validation_summary <- source_validation %>%
+  left_join(aggregated_validation, by = "year") %>%
+  mutate(
+    samples_preserved = source_total_samples == aggregated_total_samples,
+    aafs_preserved = source_aaf_count == aggregated_aaf_count,
+    testing_share_valid = abs(testing_share_sum - 1) < 0.000001,
+    aaf_share_valid = abs(aaf_share_sum - 1) < 0.000001,
+    mismatch_score_valid = abs(mismatch_score_sum) < 0.000001
+  ) %>%
+  arrange(year)
+
+write_csv(
+  validation_summary,
+  file.path(out_dir, "wada_testing_cleaning_aggregation_validation_summary.csv")
+)
+
+print(validation_summary)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 10. File summary
+# ------------------------------------------------------------
+
+file_summary <- tibble(
+  file_name = c(
+    "wada_testing_sport_year_2016_2024_cleaned_source_level.csv",
+    "wada_testing_sport_year_2016_2024_cleaned_aggregated.csv",
+    "wada_testing_sport_name_crosswalk.csv",
+    "wada_testing_duplicate_sport_year_report.csv",
+    "wada_testing_cleaning_aggregation_validation_summary.csv"
+  ),
+  description = c(
+    "Cleaned source-level data; WADA rows kept separate",
+    "Main analysis file; one row per year and sport_clean",
+    "Mapping from raw sport names to cleaned sport names",
+    "Sport-year combinations that had multiple source rows before aggregation",
+    "Checks that aggregation preserved yearly totals"
+  )
+)
+
+write_csv(
+  file_summary,
+  file.path(out_dir, "wada_testing_cleaning_file_summary.csv")
+)
+
+# ------------------------------------------------------------
+# 11. Final console output
+# ------------------------------------------------------------
+
+cat("\nCleaning and aggregation complete.\n")
+cat("Cleaned source-level rows:", nrow(wada_cleaned_source), "\n")
+cat("Cleaned aggregated rows:", nrow(wada_aggregated), "\n")
+cat("Unique sports in aggregated data:", n_distinct(wada_aggregated$sport_clean), "\n")
+cat("Output folder:", out_dir, "\n")
+```
+
+
+
+
+
+```{r}
+# ------------------------------------------------------------
+# Sports Name fixes
+# ------------------------------------------------------------
+input_file <- file.path(
+  base_dir,
+  "wada_testing_sport_year_2016_2024_cleaned_aggregated_fromR.csv"
+)
+
+out_dir <- file.path(base_dir, "cleaned")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 2. Read R-generated aggregated file
+# ------------------------------------------------------------
+
+wada_r <- read_csv(input_file, show_col_types = FALSE) %>%
+  clean_names()
+
+# ------------------------------------------------------------
+# 3. Helper function
+# ------------------------------------------------------------
+
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & x != ""])
+  if (length(x) == 0) {
+    NA_character_
+  } else {
+    paste(sort(x), collapse = " | ")
+  }
+}
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 4. Sport-name harmonisation map
+# ------------------------------------------------------------
+
+safe_name_fixes <- c(
+  "Aesthetic Group Gymnastics (R)" = "Aesthetic Group Gymnastics",
+  "Basque Sports (R)" = "Basque Sports",
+  "Beach Tennis (R)" = "Beach Tennis",
+  "Budo (R)" = "Budo",
+  "Chin-up (R)" = "Chin-up",
+  "Clay Target Shooting (R)" = "Clay Target Shooting",
+  "Company Sports (R)" = "Company Sports",
+  "Friskis & Svettis (R)" = "Friskis & Svettis",
+  "Full contact" = "Full Contact",
+  "Heavy Events (R)" = "Heavy Events",
+  "Horse Racing (R)" = "Horse Racing",
+  "Jet-Ski (R)" = "Jet-Ski",
+  "Jiu-Jitsu (R)" = "Jiu-Jitsu",
+  "Ju-Jitsu" = "Jiu-Jitsu",
+  "Kho Kho (R)" = "Kho Kho",
+  "Kung Fu (R)" = "Kung Fu",
+  "Mixed Martial Arts (R)" = "Mixed Martial Arts",
+  "Padel (R)" = "Padel",
+  "Para-Athletics (IWAS)" = "Para-Athletics",
+  "Para-Athletics Athletics" = "Para-Athletics",
+  "Para-Swimming (IWAS)" = "Para-Swimming",
+  "Para-Swimming Aquatics" = "Para-Swimming",
+  "Pencak Silat (R)" = "Pencak Silat",
+  "Pensak Silat" = "Pencak Silat",
+  "Pole sports" = "Pole Sports",
+  "Power Press (R)" = "Power Press",
+  "Power press" = "Power Press",
+  "Practical Shooting (R)" = "Practical Shooting",
+  "Rafting (R)" = "Rafting",
+  "Ringette (R)" = "Ringette",
+  "Sitting Volleyball (R)" = "Sitting Volleyball",
+  "Skyrunning (R)" = "Skyrunning",
+  "Touch Football (R)" = "Touch Football",
+  "Traditional Archery (R)" = "Traditional Archery",
+  "Ultra Triathlon (R)" = "Ultra Triathlon",
+  "Football-IBSA Footbal" = "Football - IBSA Football",
+  "Football-IBSA Football" = "Football - IBSA Football",
+  "Lifesaving" = "Life Saving",
+  "Hornuss" = "Hornussen",
+  "Cross training / Military cross" = "Cross training/Military cross training",
+  "Cross training / Military cross training" = "Cross training/Military cross training"
+)
+
+analysis_name_fixes <- c(
+  "Air" = "Air Sports",
+  "Automobile" = "Automobile Sports",
+  "Boules" = "Boules Sports",
+  "Electronic" = "Electronic Sports",
+  "School" = "School Sports",
+  "Australian" = "Australian Rules Football",
+  "Australian Rules" = "Australian Rules Football",
+  "Canoe" = "Canoe / Kayak",
+  "Roller" = "Roller Sports",
+  "Underwater" = "Underwater Sports",
+  "Extreme Sports (R)" = "Extreme",
+  "Firefighting and" = "Firefighting and Rescuing",
+  "Strongest Man" = "Strongman",
+  "ParaVolley" = "Sitting Volleyball",
+  "Cheerleading" = "Cheer",
+  "Billiards Sports" = "Billiards",
+  "Waterskiing" = "Water Skiing",
+  "Motorcycle Racing" = "Motorcycling",
+  "Taekwondo-AUT" = "Taekwondo",
+  "Taekwondo - AUT" = "Taekwondo",
+  "Taekwondo ITF-Austria" = "Taekwondo"
+)
+
+sport_name_fixes <- c(safe_name_fixes, analysis_name_fixes)
+sport_name_fixes_list <- as.list(sport_name_fixes)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 5. Apply sport-name fixes
+# ------------------------------------------------------------
+
+wada_harmonised <- wada_r %>%
+  mutate(
+    sport_analysis_name = recode(
+      sport_clean,
+      !!!sport_name_fixes_list,
+      .default = sport_clean
+    )
+  )
+
+# Optional audit file: shows which names were changed
+sport_name_harmonisation_report <- wada_harmonised %>%
+  count(sport_clean, sport_analysis_name, name = "rows") %>%
+  arrange(sport_analysis_name, sport_clean)
+
+write_csv(
+  sport_name_harmonisation_report,
+  file.path(out_dir, "wada_testing_sport_name_harmonisation_report.csv")
+)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 6. Re-aggregate by year + harmonised sport name
+# ------------------------------------------------------------
+
+wada_final <- wada_harmonised %>%
+  group_by(year, sport_analysis_name) %>%
+  summarise(
+    old_sport_names = collapse_unique(sport_clean),
+    n_source_rows = sum(n_source_rows, na.rm = TRUE),
+    sport_group_tables = collapse_unique(sport_group_tables),
+    source_reports = collapse_unique(source_reports),
+    source_files = collapse_unique(source_files),
+    
+    total_samples = sum(total_samples, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    urine_samples = sum(urine_samples, na.rm = TRUE),
+    blood_samples = sum(blood_samples, na.rm = TRUE),
+    dbs_samples = sum(dbs_samples, na.rm = TRUE),
+    aaf_count = sum(aaf_count, na.rm = TRUE),
+    source_level_split_issues = sum(source_level_split_issues, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) %>%
+  rename(sport_clean = sport_analysis_name) %>%
+  group_by(year) %>%
+  mutate(
+    yearly_total_samples = sum(total_samples, na.rm = TRUE),
+    yearly_total_aafs = sum(aaf_count, na.rm = TRUE),
+    
+    aaf_rate = if_else(total_samples > 0, aaf_count / total_samples, NA_real_),
+    testing_share = if_else(yearly_total_samples > 0, total_samples / yearly_total_samples, NA_real_),
+    aaf_share = if_else(yearly_total_aafs > 0, aaf_count / yearly_total_aafs, NA_real_),
+    mismatch_score = aaf_share - testing_share,
+    
+    sample_split_diff = total_samples -
+      coalesce(in_competition_samples, 0) -
+      coalesce(out_competition_samples, 0),
+    
+    material_split_diff = total_samples -
+      coalesce(urine_samples, 0) -
+      coalesce(blood_samples, 0) -
+      coalesce(dbs_samples, 0),
+    
+    split_data_complete = sample_split_diff == 0 & material_split_diff == 0,
+    
+    in_competition_share = if_else(total_samples > 0, in_competition_samples / total_samples, NA_real_),
+    out_competition_share = if_else(total_samples > 0, out_competition_samples / total_samples, NA_real_),
+    urine_share = if_else(total_samples > 0, urine_samples / total_samples, NA_real_),
+    blood_share = if_else(total_samples > 0, blood_samples / total_samples, NA_real_),
+    dbs_share = if_else(total_samples > 0, dbs_samples / total_samples, NA_real_)
+  ) %>%
+  ungroup() %>%
+  arrange(year, desc(total_samples), sport_clean)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 7. Validation
+# ------------------------------------------------------------
+
+validation_final <- wada_final %>%
+  group_by(year) %>%
+  summarise(
+    rows = n(),
+    total_samples = sum(total_samples, na.rm = TRUE),
+    aaf_count = sum(aaf_count, na.rm = TRUE),
+    testing_share_sum = sum(testing_share, na.rm = TRUE),
+    aaf_share_sum = sum(aaf_share, na.rm = TRUE),
+    mismatch_score_sum = sum(mismatch_score, na.rm = TRUE),
+    rows_with_split_issues = sum(!split_data_complete, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(validation_final)
+
+cat("\nFinal rows:", nrow(wada_final), "\n")
+cat("Final unique sports:", n_distinct(wada_final$sport_clean), "\n")
+```
+```{r}
+# ------------------------------------------------------------
+# 8. Save final harmonised analysis file
+# ------------------------------------------------------------
+
+write_csv(
+  wada_final,
+  file.path(out_dir, "wada_testing_sport_year_2016_2024_final_sport_names.csv")
+)
+
+write_csv(
+  validation_final,
+  file.path(out_dir, "wada_testing_final_sport_name_validation.csv")
+)
+```
+```{r}
+
+```
+
+
+

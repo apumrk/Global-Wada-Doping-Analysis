@@ -1,0 +1,701 @@
+---
+title: "data_processing_adrv"
+output: html_document
+date: "2026-06-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+
+```{r}
+# ============================================================
+# Project 1: WADA ADRV Reports 2016–2023
+# Combine yearly sport-level ADRV CSV files
+# ============================================================
+
+library(tidyverse)
+library(janitor)
+library(stringr)
+```
+
+```{r}
+# ------------------------------------------------------------
+# 1. File paths
+# ------------------------------------------------------------
+
+base_dir <- "C:/Users/Apu/Desktop/asl/rstudio files/seminar/project1/data"
+
+out_dir <- file.path(base_dir, "adrv_combined")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Find only yearly ADRV sport-total files
+adrv_files <- list.files(
+  path = base_dir,
+  pattern = "wada_adrv_[0-9]{4}_sport_totals\\.csv$",
+  full.names = TRUE,
+  recursive = TRUE
+)
+
+get_year_from_file <- function(x) {
+  as.integer(str_extract(basename(x), "[0-9]{4}"))
+}
+
+adrv_files <- adrv_files[order(get_year_from_file(adrv_files))]
+
+print(adrv_files)
+
+if (length(adrv_files) != 8) {
+  warning("Expected 8 ADRV sport-total files, but found ", length(adrv_files))
+}
+```
+
+```{r}
+# ------------------------------------------------------------
+# 2. Helper functions
+# ------------------------------------------------------------
+
+clean_number <- function(x) {
+  if (is.null(x)) {
+    return(NA_real_)
+  }
+  
+  x %>%
+    as.character() %>%
+    str_replace_all(",", "") %>%
+    str_replace_all("%", "") %>%
+    str_replace_all("−", "-") %>%
+    str_replace_all("–", "-") %>%
+    str_replace_all("—", "-") %>%
+    str_trim() %>%
+    na_if("") %>%
+    na_if("-") %>%
+    as.numeric()
+}
+
+coalesce_chr_cols <- function(data, cols) {
+  existing_cols <- intersect(cols, names(data))
+  
+  if (length(existing_cols) == 0) {
+    return(rep(NA_character_, nrow(data)))
+  }
+  
+  values <- map(existing_cols, ~ as.character(data[[.x]]))
+  do.call(coalesce, values)
+}
+
+coalesce_num_cols <- function(data, cols) {
+  existing_cols <- intersect(cols, names(data))
+  
+  if (length(existing_cols) == 0) {
+    return(rep(NA_real_, nrow(data)))
+  }
+  
+  values <- map(existing_cols, ~ clean_number(data[[.x]]))
+  do.call(coalesce, values)
+}
+
+sum_num_cols <- function(data, cols) {
+  existing_cols <- intersect(cols, names(data))
+  
+  if (length(existing_cols) == 0) {
+    return(rep(NA_real_, nrow(data)))
+  }
+  
+  mat <- map_dfc(existing_cols, ~ tibble(value = clean_number(data[[.x]])))
+  out <- rowSums(mat, na.rm = TRUE)
+  all_missing <- rowSums(!is.na(mat)) == 0
+  out[all_missing] <- NA_real_
+  out
+}
+```
+
+```{r}
+# ------------------------------------------------------------
+# 3. Read and combine raw files
+# ------------------------------------------------------------
+
+wada_adrv_raw_with_source <- map_dfr(
+  adrv_files,
+  function(file_path) {
+    read_csv(file_path, show_col_types = FALSE) %>%
+      clean_names() %>%
+      mutate(
+        source_file = basename(file_path),
+        source_year = get_year_from_file(file_path),
+        .before = 1
+      )
+  }
+)
+
+wada_adrv_raw_combined <- wada_adrv_raw_with_source %>%
+  select(-source_file, -source_year)
+
+write_csv(
+  wada_adrv_raw_combined,
+  file.path(out_dir, "wada_adrv_sport_year_2016_2023_raw_combined.csv")
+)
+
+write_csv(
+  wada_adrv_raw_with_source,
+  file.path(out_dir, "wada_adrv_sport_year_2016_2023_raw_combined_with_source.csv")
+)
+```
+
+
+```{r}
+# ------------------------------------------------------------
+# 4. Create standardized combined ADRV file
+# ------------------------------------------------------------
+
+wada_adrv_standardized <- wada_adrv_raw_with_source %>%
+  mutate(
+    year = clean_number(year),
+    
+    sport_category_sources = coalesce_chr_cols(
+      cur_data(),
+      c("sport_category_tables", "sport_group_tables", "sport_categories")
+    ),
+    
+    source_tables_standardized = coalesce_chr_cols(
+      cur_data(),
+      c("source_tables", "sport_category_tables", "sport_group_tables")
+    ),
+    
+    total_samples_aaf_outcome = coalesce_num_cols(
+      cur_data(),
+      c(
+        "total_samples_aaf_table",
+        "total_samples_aaf_outcome",
+        "total_samples_reported_in_adrv_report"
+      )
+    ),
+    
+    aaf_outcome_total = clean_number(aaf_outcome_total),
+    medical_reasons_count = clean_number(medical_reasons_count),
+    no_case_to_answer_count = clean_number(no_case_to_answer_count),
+    no_sanction_count = clean_number(no_sanction_count),
+    pending_count = clean_number(pending_count),
+    analytical_adrv_count = clean_number(analytical_adrv_count),
+    
+    non_analytical_adrv_count_sport_allocated = coalesce_num_cols(
+      cur_data(),
+      c("non_analytical_adrv_count_athletes", "non_analytical_adrv_count")
+    ),
+    
+    total_adrv_count_sport_allocated = coalesce_num_cols(
+      cur_data(),
+      c("total_adrv_count_sport_allocated", "total_adrv_count")
+    ),
+    
+    aaf_to_analytical_adrv_rate = if_else(
+      aaf_outcome_total > 0,
+      analytical_adrv_count / aaf_outcome_total,
+      NA_real_
+    ),
+    
+    analytical_adrv_detail_count = coalesce_num_cols(
+      cur_data(),
+      c(
+        "analytical_adrv_detail_count",
+        "analytical_adrv_detail_count_excluding_dbs",
+        "analytical_adrv_detail_calc"
+      )
+    ),
+    
+    analytical_detail_vs_aaf_outcome_diff = case_when(
+      !is.na(analytical_detail_vs_aaf_outcome_diff) ~ clean_number(analytical_detail_vs_aaf_outcome_diff),
+      !is.na(analytical_adrv_detail_count) ~ analytical_adrv_detail_count - analytical_adrv_count,
+      TRUE ~ NA_real_
+    ),
+    
+    analytical_urine_ooc = coalesce(
+      coalesce_num_cols(cur_data(), c("analytical_urine_ooc")),
+      sum_num_cols(cur_data(), c("analytical_urine_ooc_male", "analytical_urine_ooc_female"))
+    ),
+    
+    analytical_urine_ic = coalesce(
+      coalesce_num_cols(cur_data(), c("analytical_urine_ic")),
+      sum_num_cols(cur_data(), c("analytical_urine_ic_male", "analytical_urine_ic_female"))
+    ),
+    
+    analytical_blood_ooc = coalesce(
+      coalesce_num_cols(cur_data(), c("analytical_blood_ooc")),
+      sum_num_cols(cur_data(), c("analytical_blood_ooc_male", "analytical_blood_ooc_female"))
+    ),
+    
+    analytical_blood_ic = coalesce(
+      coalesce_num_cols(cur_data(), c("analytical_blood_ic")),
+      sum_num_cols(cur_data(), c("analytical_blood_ic_male", "analytical_blood_ic_female"))
+    ),
+    
+    analytical_dbs_ooc = coalesce_num_cols(cur_data(), c("analytical_dbs_ooc")),
+    analytical_dbs_ic = coalesce_num_cols(cur_data(), c("analytical_dbs_ic")),
+    
+    analytical_urine_total = coalesce(
+      coalesce_num_cols(cur_data(), c("analytical_urine_total")),
+      analytical_urine_ooc + analytical_urine_ic
+    ),
+    
+    analytical_blood_total = coalesce(
+      coalesce_num_cols(cur_data(), c("analytical_blood_total")),
+      analytical_blood_ooc + analytical_blood_ic
+    ),
+    
+    analytical_dbs_total = coalesce(
+      coalesce_num_cols(cur_data(), c("analytical_dbs_total")),
+      analytical_dbs_ooc + analytical_dbs_ic
+    )
+  ) %>%
+  group_by(year) %>%
+  mutate(
+    adrv_share_sport_allocated = total_adrv_count_sport_allocated /
+      sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    
+    analytical_adrv_share = analytical_adrv_count /
+      sum(analytical_adrv_count, na.rm = TRUE),
+    
+    non_analytical_adrv_share_sport_allocated =
+      non_analytical_adrv_count_sport_allocated /
+      sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  select(
+    source_file,
+    source_year,
+    year,
+    sport_clean,
+    sport_raw_sources,
+    sport_category_sources,
+    source_tables = source_tables_standardized,
+    total_samples_aaf_outcome,
+    aaf_outcome_total,
+    medical_reasons_count,
+    no_case_to_answer_count,
+    no_sanction_count,
+    pending_count,
+    analytical_adrv_count,
+    non_analytical_adrv_count_sport_allocated,
+    total_adrv_count_sport_allocated,
+    aaf_to_analytical_adrv_rate,
+    adrv_share_sport_allocated,
+    analytical_adrv_share,
+    non_analytical_adrv_share_sport_allocated,
+    any_of(c(
+      "has_aaf_outcome_data",
+      "has_non_analytical_adrv_data",
+      "aaf_outcome_check"
+    )),
+    analytical_adrv_detail_count,
+    analytical_detail_vs_aaf_outcome_diff,
+    analytical_urine_ooc,
+    analytical_urine_ic,
+    analytical_urine_total,
+    analytical_blood_ooc,
+    analytical_blood_ic,
+    analytical_blood_total,
+    analytical_dbs_ooc,
+    analytical_dbs_ic,
+    analytical_dbs_total,
+    source_report
+  ) %>%
+  arrange(year, desc(total_adrv_count_sport_allocated), sport_clean)
+
+write_csv(
+  wada_adrv_standardized,
+  file.path(out_dir, "wada_adrv_sport_year_2016_2023_standardized_source_level.csv")
+)
+```
+
+
+```{r}
+# ------------------------------------------------------------
+# 5. Validation summary
+# ------------------------------------------------------------
+
+expected_year_totals <- tribble(
+  ~year, ~official_aafs, ~official_analytical_adrvs, ~official_non_analytical_athlete_adrvs, ~asp_not_sport_allocated, ~official_total_adrvs_including_asp, ~note,
+  2016, 3032, 1326, 248, 21, 1595, "Sport-allocated total excludes 21 ASP cases reported only by nationality.",
+  2017, 2749, 1459, 317, 28, 1804, "Known 2-case inconsistency: detailed sport rows extract to 1,457 analytical ADRVs vs 1,459 official analytical ADRVs.",
+  2018, 2771, 1640, 267, 16, 1923, "Sport-allocated total excludes 16 ASP cases; report has a small one-case wording inconsistency.",
+  2019, 2701, 1537, 351, 26, 1914, "Sport-allocated total excludes 26 ASP cases reported only by nationality.",
+  2020, 1010, 672, 238, 25, 935, "Uses detailed Section 1 AAF outcome total of 1,010.",
+  2021, 1553, 1094, 262, 32, 1388, "Sport-allocated total excludes ASP cases; Executive Summary logic uses 32 ASP cases.",
+  2022, 1979, 1376, 245, 31, 1652, "Sport-allocated total excludes 31 ASP cases reported only by nationality.",
+  2023, 2301, 1654, 351, 0, 2005, "2023 Excel extraction uses sport-level pivot parent rows."
+)
+
+validation_summary <- wada_adrv_standardized %>%
+  group_by(year) %>%
+  summarise(
+    source_file = first(source_file),
+    rows = n(),
+    unique_sports = n_distinct(sport_clean),
+    aaf_outcome_total = sum(aaf_outcome_total, na.rm = TRUE),
+    medical_reasons_count = sum(medical_reasons_count, na.rm = TRUE),
+    no_case_to_answer_count = sum(no_case_to_answer_count, na.rm = TRUE),
+    no_sanction_count = sum(no_sanction_count, na.rm = TRUE),
+    pending_count = sum(pending_count, na.rm = TRUE),
+    analytical_adrv_count = sum(analytical_adrv_count, na.rm = TRUE),
+    non_analytical_adrv_count_sport_allocated =
+      sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    total_adrv_count_sport_allocated =
+      sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    adrv_share_sum = sum(adrv_share_sport_allocated, na.rm = TRUE),
+    analytical_adrv_share_sum = sum(analytical_adrv_share, na.rm = TRUE),
+    non_analytical_adrv_share_sum =
+      sum(non_analytical_adrv_share_sport_allocated, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(expected_year_totals, by = "year") %>%
+  mutate(
+    combined_plus_asp = total_adrv_count_sport_allocated + asp_not_sport_allocated,
+    aaf_diff_vs_official = aaf_outcome_total - official_aafs,
+    analytical_diff_vs_official = analytical_adrv_count - official_analytical_adrvs,
+    non_analytical_diff_vs_official =
+      non_analytical_adrv_count_sport_allocated -
+      official_non_analytical_athlete_adrvs,
+    combined_plus_asp_diff_vs_official_total =
+      combined_plus_asp - official_total_adrvs_including_asp
+  ) %>%
+  arrange(year)
+
+write_csv(
+  validation_summary,
+  file.path(out_dir, "wada_adrv_sport_year_2016_2023_combination_validation_summary.csv")
+)
+
+print(validation_summary)
+
+cat("\nCombined ADRV files saved in:", out_dir, "\n")
+cat("Rows in standardized file:", nrow(wada_adrv_standardized), "\n")
+cat("Years:", paste(sort(unique(wada_adrv_standardized$year)), collapse = ", "), "\n")
+```
+```{r}
+# ============================================================
+# Project 1: Clean / harmonise WADA ADRV sport names
+# Input:
+#   1) wada_adrv_sport_year_2016_2023_standardized_source_level_R.csv
+#   2) wada_testing_sport_year_2016_2024_final_sport_names.csv
+# Output:
+#   A cleaned ADRV sport-year file ready to join with Testing Figures
+# ============================================================
+
+adrv_file <- file.path(
+  base_dir,
+  "wada_adrv_sport_year_2016_2023_standardized_source_level_R.csv"
+)
+
+testing_file <- file.path(
+  base_dir,
+  "wada_testing_sport_year_2016_2024_final_sport_names.csv"
+)
+
+out_dir <- file.path(base_dir, "adrv_cleaned_for_testing_join")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 2. Helper functions
+# ------------------------------------------------------------
+
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & x != ""])
+  if (length(x) == 0) {
+    NA_character_
+  } else {
+    paste(sort(x), collapse = " | ")
+  }
+}
+
+sum_preserve_na <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  if (all(is.na(x))) {
+    NA_real_
+  } else {
+    sum(x, na.rm = TRUE)
+  }
+}
+
+any_true <- function(x) {
+  any(str_to_lower(as.character(x)) %in% c("true", "1", "yes"), na.rm = TRUE)
+}
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 3. Read data
+# ------------------------------------------------------------
+
+adrv <- read_csv(adrv_file, show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate(
+    year = as.integer(year),
+    sport_clean_original = sport_clean
+  )
+
+testing <- read_csv(testing_file, show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate(year = as.integer(year))
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 4. General sport-name harmonisation
+# ------------------------------------------------------------
+
+name_map <- c(
+  "Billiards Sports" = "Billiards",
+  "Canoe" = "Canoe / Kayak",
+  "College Sports" = "College",
+  "Fishing" = "Sport Fishing",
+  "Horse Racing (R)" = "Horse Racing",
+  "Motor Sport" = "Motorcycling",
+  "Motorcycle Racing" = "Motorcycling",
+  "ParaVolley" = "Sitting Volleyball",
+  "Pole sports" = "Pole Sports",
+  "Wheelchair Basketball" = "Basketball",
+  "Wheelchair Tennis" = "Tennis",
+  "Softball" = "Baseball / Softball"
+)
+
+adrv_harmonised <- adrv %>%
+  mutate(
+    sport_join_name = recode(
+      sport_clean_original,
+      !!!as.list(name_map),
+      .default = sport_clean_original
+    ),
+
+    # Year-specific WADA wording changes between ADRV reports and Testing Figures.
+    sport_join_name = case_when(
+      sport_join_name == "Blind Football" & year == 2021 ~ "Football 5-a-Side",
+      sport_join_name == "Blind Football" & year %in% c(2022, 2023) ~ "Football - IBSA Football",
+      sport_join_name == "Kettlebell Lifting" & year == 2020 ~ "Kettlebell",
+      sport_join_name == "Rugby League" & year == 2020 ~ "Rugby",
+      sport_join_name == "Para-Biathlon" & year == 2017 ~ "Biathlon",
+      sport_join_name == "Para-Cross Country Skiing" & year == 2019 ~ "Para-Nordic Skiing",
+      sport_join_name == "Shooting Para Sport" & year == 2021 ~ "Shooting",
+      TRUE ~ sport_join_name
+    ),
+    name_changed = sport_clean_original != sport_join_name
+  )
+
+# 2023 Unknown (ASP) is not a sport and should not be joined to Testing Figures.
+adrv_excluded_non_sport <- adrv_harmonised %>%
+  filter(sport_join_name == "Unknown (ASP)")
+
+adrv_sport_only <- adrv_harmonised %>%
+  filter(sport_join_name != "Unknown (ASP)")
+
+```
+
+
+```{r}
+# ------------------------------------------------------------
+# 5. Re-aggregate after harmonisation
+# ------------------------------------------------------------
+
+adrv_cleaned <- adrv_sport_only %>%
+  group_by(year, sport_join_name) %>%
+  summarise(
+    old_adrv_sport_names = collapse_unique(sport_clean_original),
+    n_adrv_source_rows = n(),
+    sport_raw_sources = collapse_unique(sport_raw_sources),
+    sport_category_sources = collapse_unique(sport_category_sources),
+    source_tables = collapse_unique(source_tables),
+    total_samples_aaf_outcome = sum_preserve_na(total_samples_aaf_outcome),
+    aaf_outcome_total = sum_preserve_na(aaf_outcome_total),
+    medical_reasons_count = sum_preserve_na(medical_reasons_count),
+    no_case_to_answer_count = sum_preserve_na(no_case_to_answer_count),
+    no_sanction_count = sum_preserve_na(no_sanction_count),
+    pending_count = sum_preserve_na(pending_count),
+    analytical_adrv_count = sum_preserve_na(analytical_adrv_count),
+    non_analytical_adrv_count_sport_allocated = sum_preserve_na(non_analytical_adrv_count_sport_allocated),
+    total_adrv_count_sport_allocated = sum_preserve_na(total_adrv_count_sport_allocated),
+    analytical_adrv_detail_count = sum_preserve_na(analytical_adrv_detail_count),
+    analytical_urine_ooc = sum_preserve_na(analytical_urine_ooc),
+    analytical_urine_ic = sum_preserve_na(analytical_urine_ic),
+    analytical_urine_total = sum_preserve_na(analytical_urine_total),
+    analytical_blood_ooc = sum_preserve_na(analytical_blood_ooc),
+    analytical_blood_ic = sum_preserve_na(analytical_blood_ic),
+    analytical_blood_total = sum_preserve_na(analytical_blood_total),
+    analytical_dbs_ooc = sum_preserve_na(analytical_dbs_ooc),
+    analytical_dbs_ic = sum_preserve_na(analytical_dbs_ic),
+    analytical_dbs_total = sum_preserve_na(analytical_dbs_total),
+    source_file = collapse_unique(source_file),
+    source_year = first(source_year),
+    source_report = collapse_unique(source_report),
+    has_aaf_outcome_data = any_true(has_aaf_outcome_data),
+    has_non_analytical_adrv_data = any_true(has_non_analytical_adrv_data),
+    .groups = "drop"
+  ) %>%
+  rename(sport_clean = sport_join_name) %>%
+  mutate(
+    aaf_to_analytical_adrv_rate = if_else(
+      aaf_outcome_total > 0,
+      analytical_adrv_count / aaf_outcome_total,
+      NA_real_
+    ),
+    aaf_outcome_check =
+      coalesce(medical_reasons_count, 0) +
+      coalesce(no_case_to_answer_count, 0) +
+      coalesce(no_sanction_count, 0) +
+      coalesce(pending_count, 0) +
+      coalesce(analytical_adrv_count, 0) -
+      coalesce(aaf_outcome_total, 0),
+    analytical_detail_vs_aaf_outcome_diff = if_else(
+      !is.na(analytical_adrv_detail_count),
+      analytical_adrv_detail_count - analytical_adrv_count,
+      NA_real_
+    )
+  )
+
+# Match check against Testing Figures by year + sport name.
+testing_pairs <- testing %>%
+  distinct(year, sport_clean) %>%
+  mutate(testing_sport_match_same_year = TRUE)
+
+adrv_cleaned <- adrv_cleaned %>%
+  left_join(testing_pairs, by = c("year", "sport_clean")) %>%
+  mutate(testing_sport_match_same_year = replace_na(testing_sport_match_same_year, FALSE)) %>%
+  group_by(year) %>%
+  mutate(
+    adrv_share_sport_allocated = total_adrv_count_sport_allocated /
+      sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    analytical_adrv_share = analytical_adrv_count /
+      sum(analytical_adrv_count, na.rm = TRUE),
+    non_analytical_adrv_share_sport_allocated = non_analytical_adrv_count_sport_allocated /
+      sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  select(
+    year,
+    sport_clean,
+    old_adrv_sport_names,
+    n_adrv_source_rows,
+    testing_sport_match_same_year,
+    sport_raw_sources,
+    sport_category_sources,
+    source_tables,
+    total_samples_aaf_outcome,
+    aaf_outcome_total,
+    medical_reasons_count,
+    no_case_to_answer_count,
+    no_sanction_count,
+    pending_count,
+    analytical_adrv_count,
+    non_analytical_adrv_count_sport_allocated,
+    total_adrv_count_sport_allocated,
+    aaf_to_analytical_adrv_rate,
+    adrv_share_sport_allocated,
+    analytical_adrv_share,
+    non_analytical_adrv_share_sport_allocated,
+    aaf_outcome_check,
+    analytical_adrv_detail_count,
+    analytical_detail_vs_aaf_outcome_diff,
+    analytical_urine_ooc,
+    analytical_urine_ic,
+    analytical_urine_total,
+    analytical_blood_ooc,
+    analytical_blood_ic,
+    analytical_blood_total,
+    analytical_dbs_ooc,
+    analytical_dbs_ic,
+    analytical_dbs_total,
+    source_file,
+    source_year,
+    source_report,
+    has_aaf_outcome_data,
+    has_non_analytical_adrv_data
+  ) %>%
+  arrange(year, desc(total_adrv_count_sport_allocated), sport_clean)
+
+
+```
+
+```{r}
+# ------------------------------------------------------------
+# 6. Audit files and validation
+# ------------------------------------------------------------
+
+sport_name_crosswalk <- adrv_harmonised %>%
+  distinct(year, sport_clean_original, sport_join_name, name_changed) %>%
+  rename(sport_clean_final = sport_join_name) %>%
+  arrange(year, sport_clean_original)
+
+unmatched_after_cleaning <- adrv_cleaned %>%
+  filter(!testing_sport_match_same_year)
+
+validation_summary <- adrv_cleaned %>%
+  group_by(year) %>%
+  summarise(
+    rows = n(),
+    unique_sports = n_distinct(sport_clean),
+    aaf_outcome_total = sum(aaf_outcome_total, na.rm = TRUE),
+    analytical_adrv_count = sum(analytical_adrv_count, na.rm = TRUE),
+    non_analytical_adrv_count_sport_allocated = sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    total_adrv_count_sport_allocated = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    adrv_share_sum = sum(adrv_share_sport_allocated, na.rm = TRUE),
+    analytical_adrv_share_sum = sum(analytical_adrv_share, na.rm = TRUE),
+    non_analytical_adrv_share_sum = sum(non_analytical_adrv_share_sport_allocated, na.rm = TRUE),
+    rows_not_matching_testing_same_year = sum(!testing_sport_match_same_year),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    adrv_excluded_non_sport %>%
+      group_by(year) %>%
+      summarise(
+        excluded_unknown_asp_total_adrvs = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = "year"
+  ) %>%
+  mutate(
+    excluded_unknown_asp_total_adrvs = replace_na(excluded_unknown_asp_total_adrvs, 0),
+    total_plus_excluded_unknown_asp = total_adrv_count_sport_allocated + excluded_unknown_asp_total_adrvs
+  )
+
+print(validation_summary)
+print(unmatched_after_cleaning %>% select(year, sport_clean, old_adrv_sport_names, total_adrv_count_sport_allocated, aaf_outcome_total))
+```
+```{r}
+# ------------------------------------------------------------
+# 7. Save files
+# ------------------------------------------------------------
+
+write_csv(
+  adrv_cleaned,
+  file.path(out_dir, "wada_adrv_sport_year_2016_2023_cleaned_for_testing_join.csv")
+)
+
+write_csv(
+  sport_name_crosswalk,
+  file.path(out_dir, "wada_adrv_sport_name_harmonisation_crosswalk.csv")
+)
+
+write_csv(
+  unmatched_after_cleaning,
+  file.path(out_dir, "wada_adrv_sports_not_matching_testing_same_year_after_cleaning.csv")
+)
+
+write_csv(
+  adrv_excluded_non_sport,
+  file.path(out_dir, "wada_adrv_excluded_non_sport_rows.csv")
+)
+
+write_csv(
+  validation_summary,
+  file.path(out_dir, "wada_adrv_cleaning_validation_summary.csv")
+)
+
+cat("\nCleaned ADRV files saved in:\n", out_dir, "\n")
+```
+

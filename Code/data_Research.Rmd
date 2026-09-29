@@ -1,0 +1,2785 @@
+---
+title: "Data Research:World Doping Analysis"
+output: html_document
+date: "2026-06-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r setup-1, include=FALSE}
+library(tidyverse)
+library(scales)
+library(janitor)
+library(knitr)
+```
+
+```{r}
+report_theme <- theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(
+      size = 15,
+      face = "bold",
+      hjust = 0.5
+    ),
+    plot.subtitle = element_text(
+      size = 11,
+      hjust = 0.5
+    ),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10.5),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    plot.caption = element_text(size = 9)
+  )
+```
+
+
+
+```{r setup-2, include=FALSE}
+# Load testing dataset
+base_dir <- "C:/Users/Apu/Desktop/asl/rstudio files/seminar/project1/data"
+
+testing_file <- file.path(base_dir, "wada_testing_sport_year_2016_2024.csv")
+
+testing <- read_csv(testing_file)
+```
+
+```{r setup-3, include=FALSE}
+# Inspect basic structure
+glimpse(testing)
+head(testing)
+```
+
+```{r setup-hidden, include=FALSE}
+# ------------------------------------------------------------
+# 1. Top 10 most tested sports worldwide, 2016–2024
+# ------------------------------------------------------------
+
+sport_summary <- testing %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2024 = sum(total_samples, na.rm = TRUE),
+    total_aafs_2016_2024 = sum(aaf_count, na.rm = TRUE),
+    years_available = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    testing_share_percent = total_samples_2016_2024 / sum(total_samples_2016_2024) * 100,
+    aaf_rate_percent = total_aafs_2016_2024 / total_samples_2016_2024 * 100
+  ) %>%
+  arrange(desc(total_samples_2016_2024))
+
+top10_sports <- sport_summary %>%
+  slice_head(n = 10)
+
+# Vertical bar chart with numbers on top
+top10_plot <- ggplot(top10_sports, aes(x = reorder(sport_clean, -total_samples_2016_2024),
+                         y = total_samples_2016_2024)) +
+  geom_col(fill = "steelblue", width = 0.7) +
+  geom_text(aes(label = comma(total_samples_2016_2024)),
+            vjust = -0.3, size = 3.5) +
+  scale_y_continuous(labels = comma,
+                     expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Top 10 Most Tested Sports Worldwide, WADA 2016–2024",
+    x = "Sport",
+    y = "Total samples/tests"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+ggsave(
+  filename = file.path(base_dir, "top10_most_tested_sports_2016_2024.png"),
+  plot = top10_plot,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+
+
+
+# Project 1 Story
+1. Testing volume
+“Which sports receive the most testing?”
+
+2. AAF risk
+“Which sports show more suspicious findings?”
+
+3. Mismatch
+“Are the most tested sports also the sports with the strongest detected-risk signals?”
+
+4. ADRV confirmation
+“Do suspicious findings become confirmed violations?”
+
+5. Final global risk interpretation
+“Which sports appear aligned, over-tested, or potentially under-tested?”
+
+
+
+## Research Question 1: How have global anti-doping testing volumes changed across sports from 2016 to 2024?
+
+The first research question examines how global anti-doping testing volumes changed over time. Instead of only looking at the total number of tests per year, this section focuses on the **top 10 most tested sports worldwide** between 2016 and 2024.
+
+This approach is useful because global testing is not distributed equally across all sports. A small number of sports receive a large share of testing resources, so comparing their yearly trends helps show which sports drive the overall global testing pattern.
+
+
+
+```{r yearly-plot, echo=FALSE}
+# ------------------------------------------------------------
+# Total testing volume over the years
+# ------------------------------------------------------------
+
+yearly_testing <- testing %>%
+  group_by(year) %>%
+  summarise(
+    total_samples = sum(total_samples, na.rm = TRUE),
+    total_aafs = sum(aaf_count, na.rm = TRUE),
+    sports_count = n_distinct(sport_clean),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    aaf_rate_percent = total_aafs / total_samples * 100
+  )
+
+yearly_testing
+
+yearly_plot <- ggplot(yearly_testing, aes(x = year, y = total_samples)) +
+  geom_line(color = "steelblue", linewidth = 1.2) +
+  geom_point(color = "darkorange", size = 3.5) +
+  scale_y_continuous(labels = comma) +
+  scale_x_continuous(breaks = yearly_testing$year) +
+  labs(
+    title = "Global Anti-Doping Testing Volume Over Time, WADA 2016–2024",
+    x = "Year",
+    y = "Total samples/tests"
+  ) +
+#  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+yearly_plot
+```
+```{r ,include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "global_testing_volume_by_year_2016_2024.pdf"),
+  plot = yearly_plot,
+  width = 8,
+  height = 5
+)
+```
+
+
+```{r top10-testing-trend, echo=FALSE, message=FALSE, warning=FALSE}
+# ------------------------------------------------------------
+# Identify top 10 sports by total testing volume, 2016–2024
+# ------------------------------------------------------------
+
+top10_sports <- testing %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2024 = sum(total_samples, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_samples_2016_2024)) %>%
+  slice_head(n = 10)
+
+#top10_sports #I am commenting it as I don't want the R-markdown file to be showing it.
+
+top10_list <- top10_sports$sport_clean
+
+# ------------------------------------------------------------
+# Create yearly trend data for those top 10 sports
+# ------------------------------------------------------------
+
+top10_trend <- testing %>%
+  filter(sport_clean %in% top10_list) %>%
+  group_by(year, sport_clean) %>%
+  summarise(
+    total_samples = sum(total_samples, na.rm = TRUE),
+    aaf_count = sum(aaf_count, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#top10_trend #I am commenting it as I don't want the R-markdown file to be showing it.
+
+# ------------------------------------------------------------
+# Plot line chart
+# ------------------------------------------------------------
+
+top10_trend_plot <- ggplot(
+  top10_trend,
+  aes(
+    x = year,
+    y = total_samples,
+    color = sport_clean,
+    group = sport_clean
+  )
+) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2.5) +
+  scale_y_continuous(labels = comma) +
+  scale_x_continuous(breaks = sort(unique(top10_trend$year))) +
+  labs(
+    title = "Testing Volume Trends for the Top 10 Most Tested Sports, WADA 2016–2024",
+    x = "Year",
+    y = "Total samples/tests",
+    color = "Sport"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+top10_trend_plot
+```
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "top10_testing_trends_2016_2024.pdf"),
+  plot = top10_trend_plot,
+  width = 8,
+  height = 5
+)
+
+```
+
+### Observation
+
+The chart shows that global anti-doping testing is concentrated in a small group of sports. Football, Athletics, and Cycling remain among the most heavily tested sports across the period, although their yearly testing volumes follow different patterns.
+
+A clear decline appears in 2020 across almost all of the top sports. This suggests that the COVID-19 period strongly disrupted global anti-doping testing activity. After 2020, testing volumes generally recovered, with Athletics showing a particularly strong increase after 2021 and reaching one of the highest testing levels by 2023 and 2024.
+
+Overall, this analysis shows that global testing priorities are not evenly distributed across sports. A small number of sports receive a large share of testing resources, which provides the foundation for the next research question: whether these testing priorities match detected doping-risk signals such as AAF rates and ADRV outcomes.
+
+
+
+## Research Question 2: Which sports show the strongest AAF-based doping-risk signals?
+
+After examining testing volume, the next step is to examine detected doping-risk signals. In this section, the focus is on **Adverse Analytical Findings (AAFs)**. An AAF does not necessarily mean a confirmed doping violation, but it is an important early indicator of detected risk in anti-doping testing.
+
+This research question considers two perspectives. First, sports are ranked by the total number of AAFs. This shows where the largest number of suspicious findings occurred. Second, sports are ranked by AAF rate per 1,000 tests. This adjusts for testing volume and therefore gives a better indication of relative detected risk.
+
+To avoid misleading results from very small sports with only a few tests, a minimum testing threshold is applied before ranking sports by AAF rate.
+
+```{r rq2-aaf-risk-preparation, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Minimum number of total samples required for AAF rate ranking
+# We can change this to 500, 1000, or 5000 depending on how strict we want to be
+min_samples <- 1000
+
+# Aggregate sport-level AAF information across 2016–2024
+aaf_sport_summary <- testing %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2024 = sum(total_samples, na.rm = TRUE),
+    total_aafs_2016_2024 = sum(aaf_count, na.rm = TRUE),
+    years_available = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    aaf_rate = total_aafs_2016_2024 / total_samples_2016_2024,
+    aaf_rate_per_1000_tests = aaf_rate * 1000,
+    testing_share_percent = total_samples_2016_2024 / sum(total_samples_2016_2024) * 100,
+    aaf_share_percent = total_aafs_2016_2024 / sum(total_aafs_2016_2024) * 100
+  )
+```
+
+### 2.1 Sports with the highest number of AAFs
+
+```{r rq2-top-aaf-count-table, echo=FALSE, message=FALSE, warning=FALSE}
+top10_aaf_count <- aaf_sport_summary %>%
+  arrange(desc(total_aafs_2016_2024)) %>%
+  slice_head(n = 10)
+
+top10_aaf_count %>%
+  select(
+    sport_clean,
+    total_samples_2016_2024,
+    total_aafs_2016_2024,
+    aaf_rate_per_1000_tests,
+    aaf_share_percent
+  ) %>%
+  mutate(
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2),
+    aaf_share_percent = round(aaf_share_percent, 2)
+  )
+```
+
+```{r rq2-top-aaf-count-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=6, dpi=300}
+top10_aaf_count_plot <- ggplot(
+  top10_aaf_count,
+  aes(
+    x = reorder(sport_clean, -total_aafs_2016_2024),
+    y = total_aafs_2016_2024
+  )
+) +
+  geom_col(fill = "steelblue", width = 0.7) +
+  geom_text(
+    aes(label = comma(total_aafs_2016_2024)),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  scale_y_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  labs(
+    title = "Top 10 Sports by AAF Count, WADA 2016–2024",
+    x = "Sport",
+    y = "Total AAF count"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+top10_aaf_count_plot
+```
+
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "top10_aaf_count_2016_2024.pdf"),
+  plot = top10_aaf_count_plot,
+  width = 8,
+  height = 5
+)
+
+```
+
+### 2.2 Sports with the highest AAF rate
+
+```{r rq2-top-aaf-rate-table, echo=FALSE, message=FALSE, warning=FALSE}
+top10_aaf_rate <- aaf_sport_summary %>%
+  filter(total_samples_2016_2024 >= min_samples) %>%
+  arrange(desc(aaf_rate_per_1000_tests)) %>%
+  slice_head(n = 10)
+
+top10_aaf_rate %>%
+  select(
+    sport_clean,
+    total_samples_2016_2024,
+    total_aafs_2016_2024,
+    aaf_rate_per_1000_tests
+  ) %>%
+  mutate(
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2)
+  )
+```
+
+```{r rq2-top-aaf-rate-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=6, dpi=300}
+top10_aaf_rate_plot <- ggplot(
+  top10_aaf_rate,
+  aes(
+    x = reorder(sport_clean, -aaf_rate_per_1000_tests),
+    y = aaf_rate_per_1000_tests
+  )
+) +
+  geom_col(fill = "darkorange", width = 0.7) +
+  geom_text(
+    aes(label = round(aaf_rate_per_1000_tests, 1)),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  scale_y_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  labs(
+    title = paste0("Top 10 Sports by AAF Rate, WADA 2016–2024"),
+    subtitle = paste0("Only sports with at least ", comma(min_samples), " total samples included"),
+    x = "Sport",
+    y = "AAF rate per 1,000 tests"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+top10_aaf_rate_plot
+```
+
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "top10_aaf_rate_2016_2024.pdf"),
+  plot = top10_aaf_rate_plot,
+  width = 8,
+  height = 5
+)
+
+```
+
+### 2.3 Relationship between testing volume and AAF rate
+
+```{r rq2-testing-volume-vs-aaf-rate, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=7, dpi=300}
+# Select sports to label in the scatter plot:
+# top AAF-count sports + top AAF-rate sports
+sports_to_label <- union(
+  top10_aaf_count$sport_clean,
+  top10_aaf_rate$sport_clean
+)
+
+aaf_scatter_plot <- ggplot(
+  aaf_sport_summary %>% filter(total_samples_2016_2024 >= min_samples),
+  aes(
+    x = total_samples_2016_2024,
+    y = aaf_rate_per_1000_tests
+  )
+) +
+  geom_point(alpha = 0.65, size = 2.5) +
+  geom_text(
+    data = aaf_sport_summary %>%
+      filter(
+        total_samples_2016_2024 >= min_samples,
+        sport_clean %in% sports_to_label
+      ),
+    aes(label = sport_clean),
+    size = 3,
+    vjust = -0.6,
+    check_overlap = TRUE
+  ) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Testing Volume vs AAF Rate by Sport, WADA 2016–2024",
+    subtitle = paste0("Only sports with at least ", comma(min_samples), " total samples included"),
+    x = "Total samples/tests, 2016–2024",
+    y = "AAF rate per 1,000 tests"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+aaf_scatter_plot
+```
+
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "testing_volume_vs_aaf_rate_2016_2024.pdf"),
+  plot = aaf_scatter_plot,
+  width = 8,
+  height = 5
+)
+
+```
+
+### Observation
+
+The AAF analysis shows that the interpretation depends strongly on whether we look at total AAF counts or AAF rates. Sports with very large testing volumes, such as Athletics, Cycling, Football, Weightlifting, and Aquatics, naturally appear among the highest sports by total AAF count because they receive many tests.
+
+However, the AAF rate per 1,000 tests gives a different view. After applying a minimum testing threshold, sports such as Bodybuilding, Arm Wrestling, Kickboxing, Powerlifting, Kabaddi, Muaythai, American Football, and Mixed Martial Arts show much higher relative AAF rates. This suggests that some sports with lower overall testing volume may show stronger detected-risk signals once testing volume is taken into account.
+
+The scatter plot supports this point visually. Some highly tested sports have moderate or low AAF rates, while some less-tested sports have much higher AAF rates. Therefore, testing volume alone does not fully represent detected doping risk. This finding leads directly into the next research question, where testing share will be compared with AAF share to identify possible over-tested and under-tested sports.
+
+
+This Research Question is stronger than just plotting “top 10 AAF rate” because it gives three layers:
+
+AAF count = where most findings occurred.
+AAF rate = where findings were most frequent relative to testing volume.
+Scatter plot = whether testing volume and AAF risk seem aligned.
+
+After this, RQ3(Research Question 3) can use testing_share, aaf_share, and mismatch_score to directly answer the testing-risk mismatch question.
+
+
+
+## Research Question 3: Which sports appear over-tested or under-tested based on testing share and AAF share? or Research Question 3: Are global testing priorities aligned with AAF-based detected risk?
+
+After identifying the most tested sports and the sports with the strongest AAF-based risk signals, this section compares both dimensions directly. The aim is to evaluate whether global anti-doping testing volume appears aligned with detected doping-risk signals.
+
+For each sport, two shares are calculated:
+
+- **Testing share**: the sport's proportion of all global tests.
+- **AAF share**: the sport's proportion of all global Adverse Analytical Findings.
+
+The difference between these two values is used as a **Testing–Risk Mismatch Score**:
+
+\[
+\text{Mismatch Score} = \text{AAF Share} - \text{Testing Share}
+\]
+
+A positive mismatch score suggests that a sport produced more AAFs than expected based on its testing share. A negative mismatch score suggests that a sport received a relatively large share of testing but produced fewer AAFs relative to that testing volume.
+
+```{r rq3-mismatch-preparation, include=FALSE, message=FALSE, warning=FALSE}
+
+# Minimum number of total samples required for inclusion
+# This avoids unstable interpretations from sports with very small testing volume
+min_samples <- 1000
+
+# Create sport-level mismatch dataset for 2016–2024
+mismatch_sport_summary <- testing %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2024 = sum(total_samples, na.rm = TRUE),
+    total_aafs_2016_2024 = sum(aaf_count, na.rm = TRUE),
+    years_available = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    testing_share = total_samples_2016_2024 / sum(total_samples_2016_2024),
+    aaf_share = total_aafs_2016_2024 / sum(total_aafs_2016_2024),
+    mismatch_score = aaf_share - testing_share,
+    testing_share_percent = testing_share * 100,
+    aaf_share_percent = aaf_share * 100,
+    mismatch_score_percentage_points = mismatch_score * 100,
+    aaf_rate_per_1000_tests = total_aafs_2016_2024 / total_samples_2016_2024 * 1000
+  ) %>%
+  filter(total_samples_2016_2024 >= min_samples)
+
+# Check summary
+mismatch_sport_summary %>%
+  summarise(
+    sports_included = n(),
+    total_samples = sum(total_samples_2016_2024),
+    total_aafs = sum(total_aafs_2016_2024)
+  )
+```
+
+### 3.1 Sports with the largest positive mismatch score
+
+A positive mismatch score means that a sport's share of AAFs is larger than its share of testing. These sports may represent possible under-tested or higher-yield sports from an AAF-risk perspective.
+
+```{r rq3-positive-mismatch-table, echo=FALSE, message=FALSE, warning=FALSE}
+top_positive_mismatch <- mismatch_sport_summary %>%
+  arrange(desc(mismatch_score_percentage_points)) %>%
+  slice_head(n = 10)
+
+top_positive_mismatch %>%
+  select(
+    sport_clean,
+    total_samples_2016_2024,
+    total_aafs_2016_2024,
+    testing_share_percent,
+    aaf_share_percent,
+    mismatch_score_percentage_points,
+    aaf_rate_per_1000_tests
+  ) %>%
+  mutate(
+    testing_share_percent = round(testing_share_percent, 2),
+    aaf_share_percent = round(aaf_share_percent, 2),
+    mismatch_score_percentage_points = round(mismatch_score_percentage_points, 2),
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2)
+  )
+```
+
+### 3.2 Sports with the largest negative mismatch score
+
+A negative mismatch score means that a sport's share of testing is larger than its share of AAFs. These sports are not necessarily unimportant, but from an AAF-yield perspective, they produce fewer AAFs relative to their testing volume.
+
+```{r rq3-negative-mismatch-table, echo=FALSE, message=FALSE, warning=FALSE}
+top_negative_mismatch <- mismatch_sport_summary %>%
+  arrange(mismatch_score_percentage_points) %>%
+  slice_head(n = 10)
+
+top_negative_mismatch %>%
+  select(
+    sport_clean,
+    total_samples_2016_2024,
+    total_aafs_2016_2024,
+    testing_share_percent,
+    aaf_share_percent,
+    mismatch_score_percentage_points,
+    aaf_rate_per_1000_tests
+  ) %>%
+  mutate(
+    testing_share_percent = round(testing_share_percent, 2),
+    aaf_share_percent = round(aaf_share_percent, 2),
+    mismatch_score_percentage_points = round(mismatch_score_percentage_points, 2),
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2)
+  )
+```
+
+### 3.3 Visualising the largest mismatch scores
+
+```{r rq3-mismatch-bar-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, dpi=300}
+# Combine top positive and top negative mismatch sports
+mismatch_bar_data <- bind_rows(
+  top_positive_mismatch %>%
+    mutate(mismatch_type = "Positive mismatch"),
+  top_negative_mismatch %>%
+    mutate(mismatch_type = "Negative mismatch")
+) %>%
+  mutate(
+    sport_clean = fct_reorder(sport_clean, mismatch_score_percentage_points)
+  )
+
+mismatch_bar_plot <- ggplot(
+  mismatch_bar_data,
+  aes(
+    x = mismatch_score_percentage_points,
+    y = sport_clean,
+    fill = mismatch_type
+  )
+) +
+  geom_col(width = 0.7) +
+  geom_vline(xintercept = 0, linewidth = 0.8) +
+  geom_text(
+    aes(label = round(mismatch_score_percentage_points, 2)),
+    hjust = ifelse(mismatch_bar_data$mismatch_score_percentage_points > 0, -0.15, 1.15),
+    size = 3.4
+  ) +
+  scale_x_continuous(
+    labels = label_number(suffix = " pp"),
+    expand = expansion(mult = c(0.15, 0.15))
+  ) +
+  labs(
+    title = "Largest Testing–Risk Mismatch Scores, WADA 2016–2024",
+    subtitle = paste0("Only sports with at least ", comma(min_samples), " total samples included"),
+    x = "Mismatch score in percentage points: AAF share minus testing share",
+    y = "Sport",
+    fill = "Mismatch type"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+mismatch_bar_plot
+```
+
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "largest_testing_risk_mismatch_scores_2016_2024.pdf"),
+  plot = mismatch_bar_plot,
+  width = 8,
+  height = 5
+)
+
+```
+
+### 3.4 Quadrant plot: testing share vs AAF share
+
+This plot compares each sport's testing share with its AAF share. Sports above the diagonal line have a higher AAF share than testing share. Sports below the diagonal line have a lower AAF share than testing share.
+
+```{r rq3-quadrant-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8, dpi=300}
+# Select sports to label:
+# top positive mismatch, top negative mismatch, and largest testing-volume sports
+sports_to_label <- union(
+  union(top_positive_mismatch$sport_clean, top_negative_mismatch$sport_clean),
+  mismatch_sport_summary %>%
+    arrange(desc(total_samples_2016_2024)) %>%
+    slice_head(n = 10) %>%
+    pull(sport_clean)
+)
+
+quadrant_plot <- ggplot(
+  mismatch_sport_summary,
+  aes(
+    x = testing_share_percent,
+    y = aaf_share_percent
+  )
+) +
+  geom_point(alpha = 0.65, size = 2.5) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    linetype = "dashed",
+    linewidth = 0.8
+  ) +
+  geom_text(
+    data = mismatch_sport_summary %>%
+      filter(sport_clean %in% sports_to_label),
+    aes(label = sport_clean),
+    size = 3,
+    vjust = -0.6,
+    check_overlap = TRUE
+  ) +
+  scale_x_continuous(labels = label_number(suffix = "%")) +
+  scale_y_continuous(labels = label_number(suffix = "%")) +
+  labs(
+    title = "Testing Share vs AAF Share by Sport, WADA 2016–2024",
+    subtitle = paste0("Dashed line shows perfect alignment; sports above the line have higher AAF share than testing share"),
+    x = "Testing share (%)",
+    y = "AAF share (%)"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+quadrant_plot
+```
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "testing_share_vs_aaf_share_2016_2024.pdf"),
+  plot = quadrant_plot,
+  width = 8,
+  height = 5
+)
+
+```
+### 3.5 Classifying sports into mismatch categories
+
+The next step classifies sports into four groups. Here, “high” is defined as being in the top 25% of included sports for testing share or AAF share. This gives a relative classification within the dataset.
+
+```{r rq3-mismatch-classification, echo=FALSE, message=FALSE, warning=FALSE}
+# Define high testing and high AAF signal using the 75th percentile
+testing_share_cutoff <- quantile(mismatch_sport_summary$testing_share_percent, 0.75, na.rm = TRUE)
+aaf_share_cutoff <- quantile(mismatch_sport_summary$aaf_share_percent, 0.75, na.rm = TRUE)
+
+mismatch_classification <- mismatch_sport_summary %>%
+  mutate(
+    testing_level = if_else(
+      testing_share_percent >= testing_share_cutoff,
+      "High testing",
+      "Lower testing"
+    ),
+    aaf_signal_level = if_else(
+      aaf_share_percent >= aaf_share_cutoff,
+      "High AAF signal",
+      "Lower AAF signal"
+    ),
+    mismatch_category = case_when(
+      testing_level == "High testing" & aaf_signal_level == "High AAF signal" ~
+        "High testing, high detected risk",
+      testing_level == "High testing" & aaf_signal_level == "Lower AAF signal" ~
+        "High testing, lower detected risk",
+      testing_level == "Lower testing" & aaf_signal_level == "High AAF signal" ~
+        "Lower testing, high detected risk",
+      TRUE ~ "Lower testing, lower detected risk"
+    )
+  )
+
+# Count sports in each category
+mismatch_classification %>%
+  count(mismatch_category, sort = TRUE)
+```
+
+```{r rq3-category-table, echo=FALSE, message=FALSE, warning=FALSE}
+# Show the most important sports in each category
+mismatch_category_table <- mismatch_classification %>%
+  group_by(mismatch_category) %>%
+  arrange(desc(abs(mismatch_score_percentage_points)), .by_group = TRUE) %>%
+  slice_head(n = 8) %>%
+  ungroup() %>%
+  select(
+    mismatch_category,
+    sport_clean,
+    total_samples_2016_2024,
+    total_aafs_2016_2024,
+    testing_share_percent,
+    aaf_share_percent,
+    mismatch_score_percentage_points,
+    aaf_rate_per_1000_tests
+  ) %>%
+  mutate(
+    testing_share_percent = round(testing_share_percent, 2),
+    aaf_share_percent = round(aaf_share_percent, 2),
+    mismatch_score_percentage_points = round(mismatch_score_percentage_points, 2),
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2)
+  )
+
+knitr::kable(
+  mismatch_category_table,
+  format = "html",
+  caption = "Mismatch category table"
+)
+```
+
+
+### Observation
+
+The mismatch analysis shows that global testing volume and AAF-based detected risk are not perfectly aligned across sports. Some sports account for a much larger share of AAFs than their share of testing, while others receive a large share of testing but produce a smaller share of AAFs.
+
+The strongest positive mismatch appears for Bodybuilding. Although Bodybuilding accounts for only 0.50% of total testing volume, it accounts for 8.86% of all AAFs, producing a mismatch score of +8.36 percentage points. Powerlifting also shows a strong positive mismatch, with 1.38% of tests but 6.34% of AAFs. Other sports with positive mismatch include Weightlifting, Mixed Martial Arts, Boxing, Wrestling, American Football, Kickboxing, Baseball / Softball, and Arm Wrestling.
+
+In contrast, Football shows the largest negative mismatch. It accounts for 13.79% of all tests but only 4.99% of all AAFs, giving a mismatch score of -8.80 percentage points. This means Football receives a very large share of global testing, but its AAF share is much lower than its testing share. Aquatics, Skiing, Athletics, Tennis, Skating, and Rowing also show negative mismatch scores.
+
+Among the most tested sports, the patterns differ. Football and Aquatics show clear negative mismatch, Athletics is closer to alignment but still negative, Cycling is almost aligned, and Weightlifting shows a positive mismatch. This suggests that testing priorities are only partly aligned with AAF-based detected risk.
+
+Overall, RQ3 provides one of the main findings of the project: anti-doping testing is not distributed purely according to AAF yield. Some sports with relatively modest testing volumes, especially Bodybuilding and Powerlifting, produce disproportionately high shares of AAFs, while some very highly tested sports, especially Football, produce lower AAF shares relative to their testing volume.
+
+### IMPORTANT FOR RQ3
+What we can understand from RQ3: 
+This RQ is more important than RQ1 and RQ2 because it directly asks:
+
+Are testing priorities aligned with detected risk?
+
+The expected key result is:
+
+<table style="margin-left: auto; margin-right: auto;">
+  <tr>
+    <th>Pattern</th>
+    <th>Meaning</th>
+  </tr>
+  <tr>
+    <td>Positive mismatch  =</td>
+    <td>Sport has higher AAF share than testing share</td>
+  </tr>
+  <tr>
+    <td>Negative mismatch  =</td>
+    <td>Sport has higher testing share than AAF share</td>
+  </tr>
+  <tr>
+    <td>Around zero  =</td>
+    <td>Testing share and AAF share are relatively aligned</td>
+  </tr>
+</table>
+
+In the collected data, the most important early finding is that Football is heavily tested but has a much lower AAF share than testing share, while Bodybuilding and Powerlifting show the opposite pattern.
+
+
+
+## Research Question 4: Do AAF-based risk signals translate into confirmed ADRV outcomes?
+The previous section used Adverse Analytical Findings (AAFs) as an indicator of detected doping risk. However, an AAF is not the same as a confirmed anti-doping rule violation. Some AAFs may later be explained by medical reasons, result in no case to answer, lead to no sanction, or remain pending.
+
+Therefore, this section compares AAF-based signals with confirmed Anti-Doping Rule Violations (ADRVs). The aim is to examine whether sports with many AAFs are also the sports with many confirmed violations.
+
+This analysis uses the joined WADA testing and ADRV dataset from **2016 to 2023**, because ADRV data is available up to 2023 in the prepared dataset.
+
+```{r rq4-aaf-adrv-preparation, echo=FALSE, message=FALSE, warning=FALSE}
+joined_file <- file.path(base_dir, "wada_testing_adrv_sport_year_2016_2023_joined_analysisR.csv")
+
+joined <- read_csv(joined_file)
+
+# Minimum testing threshold for sport-level interpretation
+min_samples <- 1000
+
+# Aggregate sport-level AAF and ADRV outcomes across 2016–2023
+rq4_sport_summary <- joined %>%
+  mutate(
+    total_samples = replace_na(total_samples, 0),
+    aaf_count = replace_na(aaf_count, 0),
+    adrv_report_aaf_outcome_total = replace_na(adrv_report_aaf_outcome_total, 0),
+    analytical_adrv_count = replace_na(analytical_adrv_count, 0),
+    non_analytical_adrv_count_sport_allocated = replace_na(non_analytical_adrv_count_sport_allocated, 0),
+    total_adrv_count_sport_allocated = replace_na(total_adrv_count_sport_allocated, 0)
+  ) %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2023 = sum(total_samples, na.rm = TRUE),
+    testing_aafs_2016_2023 = sum(aaf_count, na.rm = TRUE),
+    adrv_report_aaf_outcomes_2016_2023 = sum(adrv_report_aaf_outcome_total, na.rm = TRUE),
+    analytical_adrvs_2016_2023 = sum(analytical_adrv_count, na.rm = TRUE),
+    non_analytical_adrvs_2016_2023 = sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    total_adrvs_2016_2023 = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    years_available = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    aaf_rate_per_1000_tests = testing_aafs_2016_2023 / total_samples_2016_2023 * 1000,
+    analytical_adrv_rate_per_1000_tests = analytical_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    total_adrv_rate_per_1000_tests = total_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    analytical_adrv_per_testing_aaf = if_else(
+      testing_aafs_2016_2023 > 0,
+      analytical_adrvs_2016_2023 / testing_aafs_2016_2023,
+      NA_real_
+    ),
+    total_adrv_per_testing_aaf = if_else(
+      testing_aafs_2016_2023 > 0,
+      total_adrvs_2016_2023 / testing_aafs_2016_2023,
+      NA_real_
+    )
+  )
+
+# Filtered dataset for sport-level interpretation
+rq4_included <- rq4_sport_summary %>%
+  filter(
+    total_samples_2016_2023 >= min_samples,
+    testing_aafs_2016_2023 > 0
+  )
+```
+
+### 4.1 Overall AAF-to-ADRV outcome summary
+
+```{r rq4-overall-summary, echo=FALSE, message=FALSE, warning=FALSE}
+rq4_overall <- rq4_sport_summary %>%
+  summarise(
+    total_samples = sum(total_samples_2016_2023, na.rm = TRUE),
+    testing_aafs = sum(testing_aafs_2016_2023, na.rm = TRUE),
+    adrv_report_aaf_outcomes = sum(adrv_report_aaf_outcomes_2016_2023, na.rm = TRUE),
+    analytical_adrvs = sum(analytical_adrvs_2016_2023, na.rm = TRUE),
+    non_analytical_adrvs = sum(non_analytical_adrvs_2016_2023, na.rm = TRUE),
+    total_adrvs = sum(total_adrvs_2016_2023, na.rm = TRUE)
+  ) %>%
+  mutate(
+    analytical_adrv_per_testing_aaf = analytical_adrvs / testing_aafs,
+    analytical_adrv_per_adrv_report_aaf_outcome = analytical_adrvs / adrv_report_aaf_outcomes,
+    total_adrv_per_testing_aaf = total_adrvs / testing_aafs
+  )
+
+rq4_overall %>%
+  mutate(
+    analytical_adrv_per_testing_aaf = percent(analytical_adrv_per_testing_aaf, accuracy = 0.1),
+    analytical_adrv_per_adrv_report_aaf_outcome = percent(analytical_adrv_per_adrv_report_aaf_outcome, accuracy = 0.1),
+    total_adrv_per_testing_aaf = percent(total_adrv_per_testing_aaf, accuracy = 0.1)
+  )
+knitr::kable(
+  rq4_overall,
+  format = "html",
+  caption = "Overall Table"
+)
+```
+
+### 4.2 Which sports had the most confirmed ADRVs?
+
+```{r rq4-top-adrv-table, echo=FALSE, message=FALSE, warning=FALSE}
+top10_total_adrvs <- rq4_included %>%
+  arrange(desc(total_adrvs_2016_2023)) %>%
+  slice_head(n = 10)
+
+top10_total_adrvs %>%
+  select(
+    sport_clean,
+    total_samples_2016_2023,
+    testing_aafs_2016_2023,
+    analytical_adrvs_2016_2023,
+    non_analytical_adrvs_2016_2023,
+    total_adrvs_2016_2023,
+    total_adrv_rate_per_1000_tests
+  ) %>%
+  mutate(
+    total_adrv_rate_per_1000_tests = round(total_adrv_rate_per_1000_tests, 2)
+  )
+```
+
+```{r rq4-top-adrv-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, dpi=300}
+top10_adrv_long <- top10_total_adrvs %>%
+  select(
+    sport_clean,
+    analytical_adrvs_2016_2023,
+    non_analytical_adrvs_2016_2023,
+    total_adrvs_2016_2023
+  ) %>%
+  pivot_longer(
+    cols = c(analytical_adrvs_2016_2023, non_analytical_adrvs_2016_2023),
+    names_to = "adrv_type",
+    values_to = "adrv_count"
+  ) %>%
+  mutate(
+    adrv_type = case_when(
+      adrv_type == "analytical_adrvs_2016_2023" ~ "Analytical ADRVs",
+      adrv_type == "non_analytical_adrvs_2016_2023" ~ "Non-analytical ADRVs",
+      TRUE ~ adrv_type
+    ),
+    sport_clean = fct_reorder(sport_clean, total_adrvs_2016_2023)
+  )
+
+top10_adrv_plot <- ggplot(
+  top10_adrv_long,
+  aes(
+    x = sport_clean,
+    y = adrv_count,
+    fill = adrv_type
+  )
+) +
+  geom_col(width = 0.7) +
+  geom_text(
+    data = top10_total_adrvs %>%
+      mutate(sport_clean = fct_reorder(sport_clean, total_adrvs_2016_2023)),
+    aes(
+      x = sport_clean,
+      y = total_adrvs_2016_2023,
+      label = comma(total_adrvs_2016_2023)
+    ),
+    inherit.aes = FALSE,
+    hjust = -0.15,
+    size = 3.5
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(
+    title = "Top 10 Sports by Confirmed ADRVs, WADA 2016–2023",
+    subtitle = "Stacked by analytical and non-analytical ADRVs",
+    x = "Sport",
+    y = "Number of ADRVs",
+    fill = "ADRV type"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+top10_adrv_plot
+```
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "top10_total_adrvs_2016_2023.pdf"),
+  plot = top10_adrv_plot,
+  width = 8,
+  height = 5
+)
+
+```
+### 4.3 Do sports with more AAFs also have more analytical ADRVs?
+
+```{r rq4-aaf-vs-analytical-adrv, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=7, dpi=300}
+overall_conversion <- rq4_overall$analytical_adrv_per_testing_aaf
+
+# Label sports with the highest AAF counts and highest ADRV counts
+sports_to_label_rq4 <- union(
+  rq4_included %>%
+    arrange(desc(testing_aafs_2016_2023)) %>%
+    slice_head(n = 10) %>%
+    pull(sport_clean),
+  top10_total_adrvs$sport_clean
+)
+
+aaf_adrv_scatter <- ggplot(
+  rq4_included,
+  aes(
+    x = testing_aafs_2016_2023,
+    y = analytical_adrvs_2016_2023
+  )
+) +
+  geom_point(alpha = 0.65, size = 2.5) +
+  geom_abline(
+    slope = overall_conversion,
+    intercept = 0,
+    linetype = "dashed",
+    linewidth = 0.8
+  ) +
+  geom_text(
+    data = rq4_included %>%
+      filter(sport_clean %in% sports_to_label_rq4),
+    aes(label = sport_clean),
+    size = 3,
+    vjust = -0.6,
+    check_overlap = TRUE
+  ) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "AAF Count vs Analytical ADRV Count by Sport, WADA 2016–2023",
+    subtitle = paste0(
+      "Dashed line shows overall analytical ADRV-to-AAF ratio: ",
+      percent(overall_conversion, accuracy = 0.1)
+    ),
+    x = "Total AAFs, 2016–2023",
+    y = "Analytical ADRVs, 2016–2023"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+aaf_adrv_scatter
+```
+
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "aaf_count_vs_analytical_adrv_count_2016_2023.pdf"),
+  plot = aaf_adrv_scatter,
+  width = 8,
+  height = 5
+)
+
+```
+
+
+### 4.4 Relationship between AAF rate and analytical ADRV rate
+
+```{r rq4-aaf-rate-vs-adrv-rate, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=7, dpi=300}
+aaf_adrv_rate_scatter <- ggplot(
+  rq4_included,
+  aes(
+    x = aaf_rate_per_1000_tests,
+    y = analytical_adrv_rate_per_1000_tests
+  )
+) +
+  geom_point(alpha = 0.65, size = 2.5) +
+  geom_text(
+    data = rq4_included %>%
+      filter(sport_clean %in% sports_to_label_rq4),
+    aes(label = sport_clean),
+    size = 3,
+    vjust = -0.6,
+    check_overlap = TRUE
+  ) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "AAF Rate vs Analytical ADRV Rate by Sport, WADA 2016–2023",
+    subtitle = paste0("Only sports with at least ", comma(min_samples), " total samples included"),
+    x = "AAF rate per 1,000 tests",
+    y = "Analytical ADRV rate per 1,000 tests"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+aaf_adrv_rate_scatter
+```
+
+
+
+### Observation
+
+The results show that AAF-based risk signals and confirmed ADRV outcomes are strongly related, but they are not identical. Across 2016–2023, the joined dataset contains 1,953,134 tests, 18,122 testing AAFs, 10,756 analytical ADRVs, and 13,027 total ADRVs. This means that around 59.4% of AAF outcomes became analytical ADRVs.
+
+The sports with the highest number of total ADRVs are Athletics, Bodybuilding, Cycling, Weightlifting, Powerlifting, Football, Wrestling, Rugby Union, Boxing, and Aquatics. Many of these sports also appeared among the highest sports by AAF count, suggesting that strong AAF signals often do translate into confirmed violation outcomes.
+
+However, the relationship is not perfect. Some sports have many AAFs but a lower share of confirmed analytical ADRVs, while others have a relatively high number of ADRVs compared with their AAF count. This is expected because AAFs can have different case outcomes, including medical reasons, no case to answer, no sanction, or pending status. In addition, total ADRVs include non-analytical violations, which do not necessarily originate from laboratory AAFs.
+
+The scatter plot confirms that sports with more AAFs generally also have more analytical ADRVs. Athletics, Bodybuilding, Cycling, Weightlifting, and Powerlifting stand out as sports with both high AAF counts and high confirmed violation counts. This strengthens the conclusion that these sports show consistent detected-risk signals across both AAF and ADRV measures.
+
+Overall, RQ4 shows why it is important not to treat AAFs as confirmed doping violations. AAFs are useful early risk indicators, but confirmed ADRVs provide a stricter outcome-based measure of doping violations.
+
+
+## Research Question 5: Which sports show the strongest confirmed violation risk after adjusting for testing volume?
+
+The previous research question showed that sports with many AAFs often also have many confirmed ADRVs. However, total ADRV counts can be influenced by testing volume. Sports with many tests naturally have more opportunities to detect violations.
+
+Therefore, this section adjusts confirmed violations by testing volume using the **ADRV rate per 1,000 tests**:
+
+\[
+\text{ADRV rate per 1,000 tests} = \frac{\text{Total ADRVs}}{\text{Total Samples}} \times 1000
+\]
+
+This allows comparison between sports with different testing volumes. To avoid unstable rates from very small sports, only sports with at least 1,000 total samples from 2016 to 2023 are included.
+
+```{r rq5-adrv-rate-preparation, echo=FALSE, message=FALSE, warning=FALSE}
+# Minimum testing threshold for stable rate interpretation
+min_samples <- 1000
+
+# Prepare sport-level ADRV rate summary
+rq5_sport_summary <- joined %>%
+  mutate(
+    total_samples = replace_na(total_samples, 0),
+    aaf_count = replace_na(aaf_count, 0),
+    analytical_adrv_count = replace_na(analytical_adrv_count, 0),
+    non_analytical_adrv_count_sport_allocated = replace_na(non_analytical_adrv_count_sport_allocated, 0),
+    total_adrv_count_sport_allocated = replace_na(total_adrv_count_sport_allocated, 0)
+  ) %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2023 = sum(total_samples, na.rm = TRUE),
+    testing_aafs_2016_2023 = sum(aaf_count, na.rm = TRUE),
+    analytical_adrvs_2016_2023 = sum(analytical_adrv_count, na.rm = TRUE),
+    non_analytical_adrvs_2016_2023 = sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    total_adrvs_2016_2023 = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    years_available = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    aaf_rate_per_1000_tests = testing_aafs_2016_2023 / total_samples_2016_2023 * 1000,
+    analytical_adrv_rate_per_1000_tests = analytical_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    non_analytical_adrv_rate_per_1000_tests = non_analytical_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    total_adrv_rate_per_1000_tests = total_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    testing_share = total_samples_2016_2023 / sum(total_samples_2016_2023),
+    adrv_share = total_adrvs_2016_2023 / sum(total_adrvs_2016_2023),
+    adrv_testing_gap = adrv_share - testing_share,
+    adrv_testing_gap_percentage_points = adrv_testing_gap * 100,
+    adrv_to_testing_share_ratio = adrv_share / testing_share
+  )
+
+# Filter for stable interpretation
+rq5_included <- rq5_sport_summary %>%
+  filter(
+    total_samples_2016_2023 >= min_samples,
+    total_adrvs_2016_2023 > 0
+  )
+```
+
+### 5.1 Sports with the highest ADRV rate per 1,000 tests
+
+```{r rq5-top-adrv-rate-table, echo=FALSE, message=FALSE, warning=FALSE}
+top10_adrv_rate <- rq5_included %>%
+  arrange(desc(total_adrv_rate_per_1000_tests)) %>%
+  slice_head(n = 10)
+
+top10_adrv_rate %>%
+  select(
+    sport_clean,
+    total_samples_2016_2023,
+    testing_aafs_2016_2023,
+    analytical_adrvs_2016_2023,
+    non_analytical_adrvs_2016_2023,
+    total_adrvs_2016_2023,
+    total_adrv_rate_per_1000_tests,
+    analytical_adrv_rate_per_1000_tests,
+    non_analytical_adrv_rate_per_1000_tests
+  ) %>%
+  mutate(
+    total_adrv_rate_per_1000_tests = round(total_adrv_rate_per_1000_tests, 2),
+    analytical_adrv_rate_per_1000_tests = round(analytical_adrv_rate_per_1000_tests, 2),
+    non_analytical_adrv_rate_per_1000_tests = round(non_analytical_adrv_rate_per_1000_tests, 2)
+  )
+```
+
+```{r rq5-top-adrv-rate-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, dpi=300}
+# Create long format so analytical and non-analytical ADRV rates can be stacked
+top10_adrv_rate_long <- top10_adrv_rate %>%
+  select(
+    sport_clean,
+    total_adrv_rate_per_1000_tests,
+    analytical_adrv_rate_per_1000_tests,
+    non_analytical_adrv_rate_per_1000_tests
+  ) %>%
+  pivot_longer(
+    cols = c(
+      analytical_adrv_rate_per_1000_tests,
+      non_analytical_adrv_rate_per_1000_tests
+    ),
+    names_to = "adrv_type",
+    values_to = "adrv_rate"
+  ) %>%
+  mutate(
+    adrv_type = case_when(
+      adrv_type == "analytical_adrv_rate_per_1000_tests" ~ "Analytical ADRV rate",
+      adrv_type == "non_analytical_adrv_rate_per_1000_tests" ~ "Non-analytical ADRV rate",
+      TRUE ~ adrv_type
+    ),
+    sport_clean = fct_reorder(sport_clean, total_adrv_rate_per_1000_tests)
+  )
+
+top10_adrv_rate_plot <- ggplot(
+  top10_adrv_rate_long,
+  aes(
+    x = sport_clean,
+    y = adrv_rate,
+    fill = adrv_type
+  )
+) +
+  geom_col(width = 0.7) +
+  geom_text(
+    data = top10_adrv_rate %>%
+      mutate(sport_clean = fct_reorder(sport_clean, total_adrv_rate_per_1000_tests)),
+    aes(
+      x = sport_clean,
+      y = total_adrv_rate_per_1000_tests,
+      label = round(total_adrv_rate_per_1000_tests, 1)
+    ),
+    inherit.aes = FALSE,
+    hjust = -0.15,
+    size = 3.5
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(
+    title = "Top 10 Sports by Confirmed ADRV Rate, WADA 2016–2023",
+    subtitle = paste0("Only sports with at least ", comma(min_samples), " total samples included"),
+    x = "Sport",
+    y = "ADRV rate per 1,000 tests",
+    fill = "ADRV type"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+top10_adrv_rate_plot
+```
+
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "top10_confirmed_adrv_rate_2016_2023.pdf"),
+  plot = top10_adrv_rate_plot,
+  width = 8,
+  height = 5
+)
+
+```
+
+### 5.2 Testing volume vs confirmed ADRV rate
+
+This plot checks whether highly tested sports are also the sports with the highest confirmed violation rates.
+
+```{r rq5-testing-vs-adrv-rate-scatter, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=7, dpi=300}
+# Label the highest ADRV-rate sports and the sports with the highest total ADRV counts
+sports_to_label_rq5 <- union(
+  top10_adrv_rate$sport_clean,
+  rq5_included %>%
+    arrange(desc(total_adrvs_2016_2023)) %>%
+    slice_head(n = 10) %>%
+    pull(sport_clean)
+)
+
+adrv_rate_scatter <- ggplot(
+  rq5_included,
+  aes(
+    x = total_samples_2016_2023,
+    y = total_adrv_rate_per_1000_tests
+  )
+) +
+  geom_point(alpha = 0.65, size = 2.5) +
+  geom_text(
+    data = rq5_included %>%
+      filter(sport_clean %in% sports_to_label_rq5),
+    aes(label = sport_clean),
+    size = 3,
+    vjust = -0.6,
+    check_overlap = TRUE
+  ) +
+  scale_x_log10(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Testing Volume vs Confirmed ADRV Rate by Sport, WADA 2016–2023",
+    subtitle = paste0("Only sports with at least ", comma(min_samples), " total samples included"),
+    x = "Total samples/tests, 2016–2023 (log scale)",
+    y = "Total ADRV rate per 1,000 tests"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+adrv_rate_scatter
+```
+
+### 5.3 Sports with the largest ADRV share compared with testing share
+
+This table compares each sport's share of total testing with its share of total ADRVs. A positive gap means that the sport accounts for a larger share of confirmed ADRVs than its share of tests.
+
+```{r rq5-adrv-testing-gap-table, echo=FALSE, message=FALSE, warning=FALSE}
+top_positive_adrv_gap <- rq5_included %>%
+  arrange(desc(adrv_testing_gap_percentage_points)) %>%
+  slice_head(n = 10)
+
+top_negative_adrv_gap <- rq5_included %>%
+  arrange(adrv_testing_gap_percentage_points) %>%
+  slice_head(n = 10)
+
+top_positive_adrv_gap %>%
+  select(
+    sport_clean,
+    total_samples_2016_2023,
+    total_adrvs_2016_2023,
+    total_adrv_rate_per_1000_tests,
+    testing_share,
+    adrv_share,
+    adrv_testing_gap_percentage_points,
+    adrv_to_testing_share_ratio
+  ) %>%
+  mutate(
+    testing_share = percent(testing_share, accuracy = 0.01),
+    adrv_share = percent(adrv_share, accuracy = 0.01),
+    adrv_testing_gap_percentage_points = round(adrv_testing_gap_percentage_points, 2),
+    adrv_to_testing_share_ratio = round(adrv_to_testing_share_ratio, 2),
+    total_adrv_rate_per_1000_tests = round(total_adrv_rate_per_1000_tests, 2)
+  )
+```
+
+### Observation
+
+After adjusting confirmed ADRVs by testing volume, the strongest confirmed violation risk is concentrated in a different group of sports than the most-tested sports. Bodybuilding has by far the highest confirmed ADRV rate, with 1,508 total ADRVs from 9,954 tests, equal to 151.5 ADRVs per 1,000 tests. This is much higher than any other sport in the dataset.
+
+Other sports with high confirmed ADRV rates include Arm Wrestling, Kickboxing, Powerlifting, Muaythai, Baseball, Kabaddi, Sambo, Automobile Sports, and Billiards. These sports do not necessarily have the largest total testing volumes, but they produce high numbers of confirmed violations relative to the number of tests conducted.
+
+Among larger and more globally prominent sports, Powerlifting, Weightlifting, Wrestling, Boxing, Cycling, Rugby Union, and Athletics also show important confirmed violation signals. However, their rates are lower than Bodybuilding because their testing volumes are much larger.
+
+The scatter plot shows that high testing volume does not automatically mean high confirmed violation rate. Football and Aquatics receive very large testing volumes, but their ADRV rates per 1,000 tests are relatively low compared with Bodybuilding, Powerlifting, Weightlifting, Wrestling, and Boxing. This confirms that total testing volume and confirmed violation risk are different concepts.
+
+Overall, RQ5 strengthens the main project argument: anti-doping risk should not be interpreted only through total testing volume or total violation count. When confirmed violations are adjusted by testing volume, several lower-volume sports show much stronger confirmed-risk signals than some of the most heavily tested sports.
+
+**[For RQ5, the most important chart is 5.1 Top 10 Sports by Confirmed ADRV Rate. The scatter plot is useful as supporting evidence, but the rate chart is the main result.]=For Finja & Franzi**
+
+## Research Question 6: Does testing strategy differ across higher-risk sports? Or RQ7: How does testing strategy differ across sports: in-competition vs out-of-competition testing?
+
+The previous sections focused on testing volume, AAF-based risk, and confirmed ADRV outcomes. This section examines whether testing strategy differs across sports, especially between **in-competition** and **out-of-competition** testing.
+
+Out-of-competition testing is important because it can detect doping outside the competition period and may be especially relevant for sports where doping risk is not limited to match or event days. Therefore, this section asks whether sports with stronger detected-risk signals also receive higher out-of-competition testing shares.
+
+```{r rq6-testing-strategy-preparation, echo=FALSE, message=FALSE, warning=FALSE}
+# Minimum testing threshold for stable sport-level interpretation
+min_samples <- 1000
+```
+
+### 6.1 Global in-competition and out-of-competition testing over time
+
+```{r rq6-global-ic-ooc-trend, echo=FALSE, message=FALSE, warning=FALSE}
+testing_strategy_yearly <- testing %>%
+  group_by(year) %>%
+  summarise(
+    total_samples = sum(total_samples, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    in_competition_share = in_competition_samples / total_samples,
+    out_competition_share = out_competition_samples / total_samples
+  )
+
+testing_strategy_yearly %>%
+  mutate(
+    in_competition_share = percent(in_competition_share, accuracy = 0.1),
+    out_competition_share = percent(out_competition_share, accuracy = 0.1)
+  )
+```
+
+```{r rq6-global-ic-ooc-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=6, dpi=300}
+testing_strategy_yearly_long <- testing_strategy_yearly %>%
+  select(year, in_competition_samples, out_competition_samples) %>%
+  pivot_longer(
+    cols = c(in_competition_samples, out_competition_samples),
+    names_to = "testing_type",
+    values_to = "samples"
+  ) %>%
+  mutate(
+    testing_type = case_when(
+      testing_type == "in_competition_samples" ~ "In-competition",
+      testing_type == "out_competition_samples" ~ "Out-of-competition",
+      TRUE ~ testing_type
+    )
+  )
+
+ic_ooc_yearly_plot <- ggplot(
+  testing_strategy_yearly_long,
+  aes(
+    x = factor(year),
+    y = samples,
+    fill = testing_type
+  )
+) +
+  geom_col(width = 0.75) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Global In-Competition and Out-of-Competition Testing, WADA 2016–2024",
+    x = "Year",
+    y = "Number of samples/tests",
+    fill = "Testing type"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+ic_ooc_yearly_plot
+```
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "global_ic_ooc_testing_2016_2024.pdf"),
+  plot = ic_ooc_yearly_plot,
+  width = 8,
+  height = 5
+)
+
+```
+
+### 6.2 Testing strategy among the top 10 most tested sports
+
+```{r rq6-top10-testing-strategy, echo=FALSE, message=FALSE, warning=FALSE}
+top10_testing_strategy <- testing %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2024 = sum(total_samples, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    total_aafs_2016_2024 = sum(aaf_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    in_competition_share = in_competition_samples / total_samples_2016_2024,
+    out_competition_share = out_competition_samples / total_samples_2016_2024,
+    aaf_rate_per_1000_tests = total_aafs_2016_2024 / total_samples_2016_2024 * 1000
+  ) %>%
+  arrange(desc(total_samples_2016_2024)) %>%
+  slice_head(n = 10)
+
+top10_testing_strategy %>%
+  select(
+    sport_clean,
+    total_samples_2016_2024,
+    in_competition_share,
+    out_competition_share,
+    aaf_rate_per_1000_tests
+  ) %>%
+  mutate(
+    in_competition_share = percent(in_competition_share, accuracy = 0.1),
+    out_competition_share = percent(out_competition_share, accuracy = 0.1),
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2)
+  )
+```
+
+```{r rq6-top10-testing-strategy-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, dpi=300}
+top10_testing_strategy_long <- top10_testing_strategy %>%
+  select(
+    sport_clean,
+    total_samples_2016_2024,
+    in_competition_samples,
+    out_competition_samples
+  ) %>%
+  pivot_longer(
+    cols = c(in_competition_samples, out_competition_samples),
+    names_to = "testing_type",
+    values_to = "samples"
+  ) %>%
+  mutate(
+    testing_type = case_when(
+      testing_type == "in_competition_samples" ~ "In-competition",
+      testing_type == "out_competition_samples" ~ "Out-of-competition",
+      TRUE ~ testing_type
+    ),
+    sport_clean = fct_reorder(sport_clean, total_samples_2016_2024)
+  )
+
+top10_testing_strategy_plot <- ggplot(
+  top10_testing_strategy_long,
+  aes(
+    x = sport_clean,
+    y = samples,
+    fill = testing_type
+  )
+) +
+  geom_col(width = 0.75) +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Testing Strategy in the Top 10 Most Tested Sports, WADA 2016–2024",
+    subtitle = "Split between in-competition and out-of-competition testing",
+    x = "Sport",
+    y = "Number of samples/tests",
+    fill = "Testing type"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+top10_testing_strategy_plot
+```
+
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "top10_testing_strategy_2016_2024.pdf"),
+  plot = top10_testing_strategy_plot,
+  width = 8,
+  height = 5
+)
+
+```
+### 6.3 Out-of-competition testing share and confirmed ADRV risk
+
+Because confirmed ADRV outcomes are available only up to 2023, this part uses the joined dataset from **2016 to 2023**.
+
+```{r rq6-ooc-risk-preparation, echo=FALSE, message=FALSE, warning=FALSE}
+rq6_risk_strategy <- joined %>%
+  mutate(
+    total_samples = replace_na(total_samples, 0),
+    in_competition_samples = replace_na(in_competition_samples, 0),
+    out_competition_samples = replace_na(out_competition_samples, 0),
+    aaf_count = replace_na(aaf_count, 0),
+    analytical_adrv_count = replace_na(analytical_adrv_count, 0),
+    total_adrv_count_sport_allocated = replace_na(total_adrv_count_sport_allocated, 0)
+  ) %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2023 = sum(total_samples, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    testing_aafs_2016_2023 = sum(aaf_count, na.rm = TRUE),
+    analytical_adrvs_2016_2023 = sum(analytical_adrv_count, na.rm = TRUE),
+    total_adrvs_2016_2023 = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    in_competition_share = in_competition_samples / total_samples_2016_2023,
+    out_competition_share = out_competition_samples / total_samples_2016_2023,
+    aaf_rate_per_1000_tests = testing_aafs_2016_2023 / total_samples_2016_2023 * 1000,
+    analytical_adrv_rate_per_1000_tests = analytical_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    total_adrv_rate_per_1000_tests = total_adrvs_2016_2023 / total_samples_2016_2023 * 1000
+  ) %>%
+  filter(
+    total_samples_2016_2023 >= min_samples,
+    total_adrvs_2016_2023 > 0
+  )
+
+# Correlation between OOC share and risk indicators
+rq6_correlations <- tibble(
+  relationship = c(
+    "OOC share vs AAF rate",
+    "OOC share vs analytical ADRV rate",
+    "OOC share vs total ADRV rate"
+  ),
+  spearman_correlation = c(
+    cor(
+      rq6_risk_strategy$out_competition_share,
+      rq6_risk_strategy$aaf_rate_per_1000_tests,
+      method = "spearman",
+      use = "complete.obs"
+    ),
+    cor(
+      rq6_risk_strategy$out_competition_share,
+      rq6_risk_strategy$analytical_adrv_rate_per_1000_tests,
+      method = "spearman",
+      use = "complete.obs"
+    ),
+    cor(
+      rq6_risk_strategy$out_competition_share,
+      rq6_risk_strategy$total_adrv_rate_per_1000_tests,
+      method = "spearman",
+      use = "complete.obs"
+    )
+  )
+)
+
+rq6_correlations %>%
+  mutate(
+    spearman_correlation = round(spearman_correlation, 2)
+  )
+```
+
+```{r rq6-top-adrv-risk-ooc-table, echo=FALSE, message=FALSE, warning=FALSE}
+top10_adrv_risk_strategy <- rq6_risk_strategy %>%
+  arrange(desc(total_adrv_rate_per_1000_tests)) %>%
+  slice_head(n = 10)
+
+top10_adrv_risk_strategy %>%
+  select(
+    sport_clean,
+    total_samples_2016_2023,
+    out_competition_share,
+    aaf_rate_per_1000_tests,
+    total_adrv_rate_per_1000_tests
+  ) %>%
+  mutate(
+    out_competition_share = percent(out_competition_share, accuracy = 0.1),
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2),
+    total_adrv_rate_per_1000_tests = round(total_adrv_rate_per_1000_tests, 2)
+  )
+```
+
+```{r rq6-ooc-share-vs-adrv-rate-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=7, dpi=300}
+sports_to_label_rq6 <- union(
+  top10_adrv_risk_strategy$sport_clean,
+  top10_testing_strategy$sport_clean
+)
+
+ooc_adrv_scatter <- ggplot(
+  rq6_risk_strategy,
+  aes(
+    x = out_competition_share * 100,
+    y = total_adrv_rate_per_1000_tests
+  )
+) +
+  geom_point(alpha = 0.65, size = 2.5) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", linewidth = 0.8) +
+  geom_text(
+    data = rq6_risk_strategy %>%
+      filter(sport_clean %in% sports_to_label_rq6),
+    aes(label = sport_clean),
+    size = 3,
+    vjust = -0.6,
+    check_overlap = TRUE
+  ) +
+  scale_x_continuous(labels = label_number(suffix = "%")) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Out-of-Competition Testing Share vs Confirmed ADRV Rate",
+    subtitle = "Sport-level comparison, WADA 2016–2023",
+    x = "Out-of-competition testing share",
+    y = "Total ADRV rate per 1,000 tests"
+  ) +
+  #  theme_minimal() +
+  report_theme +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+ooc_adrv_scatter
+```
+
+```{r , include=FALSE}
+ggsave(
+  filename = file.path(base_dir, "ooc_share_vs_confirmed_adrv_rate_2016_2023.pdf"),
+  plot = ooc_adrv_scatter,
+  width = 8,
+  height = 5
+)
+
+```
+### 6.4 Comparing high-risk sports with other sports
+
+Here, high-risk sports are defined as the top 25% of included sports by total ADRV rate per 1,000 tests.
+
+```{r rq6-high-risk-comparison, echo=FALSE, message=FALSE, warning=FALSE}
+adrv_rate_cutoff <- quantile(
+  rq6_risk_strategy$total_adrv_rate_per_1000_tests,
+  0.75,
+  na.rm = TRUE
+)
+
+rq6_high_risk_comparison <- rq6_risk_strategy %>%
+  mutate(
+    adrv_risk_group = if_else(
+      total_adrv_rate_per_1000_tests >= adrv_rate_cutoff,
+      "High ADRV-rate sports",
+      "Other sports"
+    )
+  ) %>%
+  group_by(adrv_risk_group) %>%
+  summarise(
+    number_of_sports = n(),
+    average_ooc_share = mean(out_competition_share, na.rm = TRUE),
+    median_ooc_share = median(out_competition_share, na.rm = TRUE),
+    average_adrv_rate_per_1000 = mean(total_adrv_rate_per_1000_tests, na.rm = TRUE),
+    median_adrv_rate_per_1000 = median(total_adrv_rate_per_1000_tests, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+rq6_high_risk_comparison %>%
+  mutate(
+    average_ooc_share = percent(average_ooc_share, accuracy = 0.1),
+    median_ooc_share = percent(median_ooc_share, accuracy = 0.1),
+    average_adrv_rate_per_1000 = round(average_adrv_rate_per_1000, 2),
+    median_adrv_rate_per_1000 = round(median_adrv_rate_per_1000, 2)
+  )
+```
+
+### Observation
+
+The global testing strategy is almost balanced between in-competition and out-of-competition testing. Across 2016–2024, 48.6% of samples were collected in competition and 51.4% were collected out of competition. However, the balance changed over time. Out-of-competition testing represented 45.6% of testing in 2016, but increased strongly during the COVID-affected years, reaching 62.0% in 2020 and 58.6% in 2021. This suggests that the disruption of regular competitions changed the structure of global anti-doping testing.
+
+Among the top 10 most tested sports, testing strategy differs clearly. Football has a relatively low out-of-competition share, with only 35.3% of tests conducted out of competition. Tennis also has a lower out-of-competition share at 38.2%. In contrast, Skiing, Rugby Union, Aquatics, Weightlifting, Wrestling, and Athletics have higher out-of-competition shares.
+
+When out-of-competition testing share is compared with detected-risk indicators, the relationship is not positive. Among sports with at least 1,000 tests from 2016 to 2023, the Spearman correlation between out-of-competition share and AAF rate is -0.45. The correlation between out-of-competition share and total ADRV rate is -0.42. This means that sports with higher AAF or ADRV rates do not generally have higher out-of-competition testing shares in this dataset.
+
+This pattern is visible among the highest confirmed-risk sports. Bodybuilding, Arm Wrestling, Kickboxing, Powerlifting, Muaythai, Baseball, Kabaddi, Sambo, Automobile Sports, and Billiards have the highest ADRV rates per 1,000 tests, but most of them do not have especially high out-of-competition testing shares. For example, Bodybuilding has an ADRV rate of 151.5 per 1,000 tests, but only 37.6% of its tests are out-of-competition. Powerlifting has an ADRV rate of 32.8 per 1,000 tests, but an out-of-competition share of 38.7%.
+
+Overall, RQ6 suggests that testing strategy is not determined only by detected AAF or ADRV risk. Some heavily tested Olympic or professional sports receive substantial out-of-competition testing even when their ADRV rates are moderate or low, while several high-ADRV-rate sports rely more on in-competition testing. This may reflect differences in sport structure, event calendars, athlete testing pools, and anti-doping priorities beyond simple detected-risk rates.
+### RQ6 gives an interesting finding: higher confirmed-risk sports are not necessarily the sports with higher OOC testing shares.
+
+
+
+## Final Synthesis: Which sports show aligned, over-tested, or under-tested global patterns?
+
+The previous research questions examined testing volume, AAF-based risk, ADRV outcomes, confirmed violation rates, and testing strategy separately. This final synthesis combines these indicators into one sport-level table.
+
+The aim is to identify whether each sport appears to show:
+
+- high testing and high detected risk,
+- high testing but lower detected risk,
+- lower testing but high detected risk,
+- or lower testing and lower detected risk.
+
+Because confirmed ADRV data is available up to 2023, this synthesis uses the joined WADA testing and ADRV dataset from **2016 to 2023**.
+
+```{r final-synthesis-preparation, echo=FALSE, message=FALSE, warning=FALSE}
+# Minimum testing threshold for stable interpretation
+min_samples <- 1000
+
+final_synthesis <- joined %>%
+  mutate(
+    total_samples = replace_na(total_samples, 0),
+    in_competition_samples = replace_na(in_competition_samples, 0),
+    out_competition_samples = replace_na(out_competition_samples, 0),
+    aaf_count = replace_na(aaf_count, 0),
+    analytical_adrv_count = replace_na(analytical_adrv_count, 0),
+    non_analytical_adrv_count_sport_allocated = replace_na(non_analytical_adrv_count_sport_allocated, 0),
+    total_adrv_count_sport_allocated = replace_na(total_adrv_count_sport_allocated, 0)
+  ) %>%
+  group_by(sport_clean) %>%
+  summarise(
+    total_samples_2016_2023 = sum(total_samples, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    testing_aafs_2016_2023 = sum(aaf_count, na.rm = TRUE),
+    analytical_adrvs_2016_2023 = sum(analytical_adrv_count, na.rm = TRUE),
+    non_analytical_adrvs_2016_2023 = sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    total_adrvs_2016_2023 = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    years_available = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  filter(total_samples_2016_2023 >= min_samples) %>%
+  mutate(
+    testing_share = total_samples_2016_2023 / sum(total_samples_2016_2023),
+    aaf_share = testing_aafs_2016_2023 / sum(testing_aafs_2016_2023),
+    adrv_share = total_adrvs_2016_2023 / sum(total_adrvs_2016_2023),
+
+    testing_vs_aaf_gap_pp = (aaf_share - testing_share) * 100,
+    testing_vs_adrv_gap_pp = (adrv_share - testing_share) * 100,
+
+    aaf_rate_per_1000_tests = testing_aafs_2016_2023 / total_samples_2016_2023 * 1000,
+    total_adrv_rate_per_1000_tests = total_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    analytical_adrv_rate_per_1000_tests = analytical_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+
+    out_competition_share = out_competition_samples / total_samples_2016_2023,
+
+    testing_rank = min_rank(desc(total_samples_2016_2023)),
+    aaf_rate_rank = min_rank(desc(aaf_rate_per_1000_tests)),
+    adrv_rate_rank = min_rank(desc(total_adrv_rate_per_1000_tests))
+  )
+```
+
+### Classification rules
+
+The classification uses relative thresholds within the dataset. A sport is defined as **high testing** if its testing share is in the top 25% of included sports. A sport is defined as having high detected risk if its AAF rate or ADRV rate is in the top 25% of included sports.
+
+```{r final-synthesis-classification, echo=FALSE, message=FALSE, warning=FALSE}
+testing_share_cutoff <- quantile(final_synthesis$testing_share, 0.75, na.rm = TRUE)
+aaf_rate_cutoff <- quantile(final_synthesis$aaf_rate_per_1000_tests, 0.75, na.rm = TRUE)
+adrv_rate_cutoff <- quantile(final_synthesis$total_adrv_rate_per_1000_tests, 0.75, na.rm = TRUE)
+
+final_synthesis <- final_synthesis %>%
+  mutate(
+    testing_level = if_else(
+      testing_share >= testing_share_cutoff,
+      "High testing",
+      "Lower testing"
+    ),
+
+    aaf_risk_level = if_else(
+      aaf_rate_per_1000_tests >= aaf_rate_cutoff,
+      "High AAF rate",
+      "Lower AAF rate"
+    ),
+
+    adrv_risk_level = if_else(
+      total_adrv_rate_per_1000_tests >= adrv_rate_cutoff,
+      "High ADRV rate",
+      "Lower ADRV rate"
+    ),
+
+    overall_risk_signal = case_when(
+      aaf_risk_level == "High AAF rate" & adrv_risk_level == "High ADRV rate" ~
+        "High AAF + high ADRV risk",
+      aaf_risk_level == "Lower AAF rate" & adrv_risk_level == "High ADRV rate" ~
+        "High confirmed ADRV risk",
+      aaf_risk_level == "High AAF rate" & adrv_risk_level == "Lower ADRV rate" ~
+        "High AAF-only risk",
+      TRUE ~ "Lower detected risk"
+    ),
+
+    synthesis_category = case_when(
+      testing_level == "High testing" & overall_risk_signal != "Lower detected risk" ~
+        "High testing, high detected risk",
+      testing_level == "High testing" & overall_risk_signal == "Lower detected risk" ~
+        "High testing, lower detected risk",
+      testing_level == "Lower testing" & overall_risk_signal != "Lower detected risk" ~
+        "Lower testing, high detected risk",
+      TRUE ~ "Lower testing, lower detected risk"
+    ),
+
+    interpretation = case_when(
+      testing_vs_aaf_gap_pp >= 1 & testing_vs_adrv_gap_pp >= 1 ~
+        "Risk share exceeds testing share on both AAF and ADRV measures",
+      testing_vs_aaf_gap_pp <= -1 & testing_vs_adrv_gap_pp <= -1 ~
+        "Testing share exceeds AAF and ADRV shares",
+      abs(testing_vs_aaf_gap_pp) < 1 & abs(testing_vs_adrv_gap_pp) < 1 ~
+        "Testing and risk shares are broadly aligned",
+      testing_vs_aaf_gap_pp >= 1 & testing_vs_adrv_gap_pp < 1 ~
+        "AAF signal stronger than testing share; confirmed signal less strong",
+      testing_vs_adrv_gap_pp >= 1 & testing_vs_aaf_gap_pp < 1 ~
+        "Confirmed ADRV signal stronger than testing share",
+      testing_vs_aaf_gap_pp <= -1 & testing_vs_adrv_gap_pp > -1 ~
+        "AAF yield lower than testing share; ADRV signal closer to aligned",
+      testing_vs_adrv_gap_pp <= -1 & testing_vs_aaf_gap_pp > -1 ~
+        "ADRV yield lower than testing share; AAF signal closer to aligned",
+      TRUE ~ "Mixed signal"
+    )
+  )
+
+# Count sports by synthesis category
+final_synthesis %>%
+  count(synthesis_category, sort = TRUE)
+```
+
+### Final synthesis table
+
+The full synthesis table contains all included sports. For readability, the table below shows key sports selected from the most tested sports, highest AAF-rate sports, highest ADRV-rate sports, and strongest mismatch cases.
+
+```{r final-synthesis-key-table, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# Select key sports for display
+key_sports <- union(
+  final_synthesis %>%
+    arrange(testing_rank) %>%
+    slice_head(n = 10) %>%
+    pull(sport_clean),
+
+  final_synthesis %>%
+    arrange(aaf_rate_rank) %>%
+    slice_head(n = 10) %>%
+    pull(sport_clean)
+)
+
+key_sports <- union(
+  key_sports,
+  final_synthesis %>%
+    arrange(adrv_rate_rank) %>%
+    slice_head(n = 10) %>%
+    pull(sport_clean)
+)
+
+key_sports <- union(
+  key_sports,
+  final_synthesis %>%
+    arrange(desc(testing_vs_aaf_gap_pp)) %>%
+    slice_head(n = 10) %>%
+    pull(sport_clean)
+)
+
+key_sports <- union(
+  key_sports,
+  final_synthesis %>%
+    arrange(testing_vs_aaf_gap_pp) %>%
+    slice_head(n = 10) %>%
+    pull(sport_clean)
+)
+
+final_synthesis_key_table <- final_synthesis %>%
+  filter(sport_clean %in% key_sports) %>%
+  arrange(
+    synthesis_category,
+    testing_rank
+  ) %>%
+  transmute(
+    Sport = sport_clean,
+    `Testing rank` = testing_rank,
+    `AAF rate rank` = aaf_rate_rank,
+    `ADRV rate rank` = adrv_rate_rank,
+    `Total samples` = comma(total_samples_2016_2023),
+    `AAF rate / 1,000` = round(aaf_rate_per_1000_tests, 2),
+    `ADRV rate / 1,000` = round(total_adrv_rate_per_1000_tests, 2),
+    `AAF gap pp` = round(testing_vs_aaf_gap_pp, 2),
+    `ADRV gap pp` = round(testing_vs_adrv_gap_pp, 2),
+    `OOC share` = percent(out_competition_share, accuracy = 0.1),
+    `Synthesis category` = synthesis_category,
+    `Risk signal` = overall_risk_signal,
+    Interpretation = interpretation
+  )
+
+knitr::kable(
+  final_synthesis_key_table,
+  format = "html",
+  caption = "Final synthesis table of key sports, WADA 2016–2023",
+  escape = TRUE
+)
+```
+```{r  echo=FALSE,}
+library(DT)
+
+datatable(
+  final_synthesis_key_table,
+  caption = "Final synthesis table of key sports, WADA 2016–2023",
+  options = list(
+    pageLength = 10,
+    scrollX = TRUE
+  )
+)
+```
+
+
+### Saving the full synthesis table
+
+```{r final-synthesis-save, echo=FALSE, message=FALSE, warning=FALSE}
+write_csv(
+  final_synthesis,
+  file.path(base_dir, "final_synthesis_full_sport_table_2016_2023.csv")
+)
+
+write_csv(
+  final_synthesis_key_table,
+  file.path(base_dir, "final_synthesis_key_sports_2016_2023.csv")
+)
+```
+
+### Observation
+
+The final synthesis shows that global anti-doping testing priorities are only partly aligned with detected doping-risk signals.
+
+Only a small group of sports are classified as **high testing, high detected risk**. In this dataset, Powerlifting, Weightlifting, Wrestling, and Boxing fall into this category. These sports combine relatively high testing exposure with strong AAF or ADRV risk indicators. Their risk share also exceeds their testing share on both AAF and ADRV measures, suggesting that testing attention is supported by detected-risk signals.
+
+A second important group is **lower testing, high detected risk**. This group includes Bodybuilding, Arm Wrestling, Kickboxing, Muaythai, Sambo, Kabaddi, American Football, and Mixed Martial Arts. These sports do not receive the largest testing volumes, but they show high AAF or ADRV rates. Bodybuilding is the clearest example: it has a much lower testing rank than Football, Athletics, or Cycling, but it has the highest AAF and ADRV rate in the dataset. This suggests a possible high-yield or under-prioritised testing area from a detected-risk perspective.
+
+The **high testing, lower detected risk** group includes several globally prominent and heavily tested sports, such as Football, Aquatics, Skiing, Tennis, Rowing, Skating, Basketball, Rugby Union, and Athletics. These sports receive large testing volumes, but their AAF or ADRV rates are not among the highest after adjusting for testing volume. Football is the clearest case: it ranks first by testing volume but has much lower AAF and ADRV shares relative to its testing share.
+
+Some sports are more balanced. Cycling, for example, is highly tested and has large total AAF and ADRV counts, but its testing share and risk shares are broadly closer to alignment than Football. This shows why the synthesis table is useful: a sport can be very important in absolute terms while not appearing extreme in rate-based risk rankings.
+
+Overall, the synthesis supports the main conclusion of Project 1: global anti-doping testing does not follow detected doping risk perfectly. Some heavily tested sports show lower detection yield, while several lower-volume sports show stronger AAF and ADRV risk signals. Therefore, testing volume, AAF rate, ADRV rate, and mismatch scores need to be interpreted together rather than separately.
+
+
+## Research Question 7: Do Olympic, Paralympic, and non-Olympic sport groups differ in testing volume, detected risk, and testing strategy?
+
+This additional analysis focuses on the Olympic and Paralympic sport lists. The aim is to examine whether Olympic and Paralympic-related sports receive different levels of testing and whether their detected-risk signals differ from other WADA sports.
+
+Because WADA sport names are sometimes broader than Olympic event names, several sports were mapped manually. For example, swimming, diving, water polo, and artistic swimming are grouped under `Aquatics`; different cycling disciplines are grouped under `Cycling`; and several skiing disciplines are grouped under `Skiing`.
+
+```{r rq7-group-mapping, echo=FALSE, message=FALSE, warning=FALSE}
+# ------------------------------------------------------------
+# Manual Olympic / Paralympic group mapping
+# ------------------------------------------------------------
+
+para_specific_sports <- c(
+  "Para-Athletics",
+  "Para-Swimming",
+  "Para-Powerlifting",
+  "Para-Alpine Skiing",
+  "Para-Biathlon",
+  "Para-Cross Country Skiing",
+  "Para-Nordic Skiing",
+  "Para-Snowboard",
+  "Para-Ice Hockey",
+  "Shooting Para Sport",
+  "Sitting Volleyball",
+  "Goalball",
+  "Boccia",
+  "Blind Football",
+  "Football 5-a-Side",
+  "Football 7-a-Side",
+  "Football - IBSA Football",
+  "CP Football",
+  "7-a-Side Football",
+  "Wheelchair Sports",
+  "Para-DanceSport",
+  "Para-Bowls",
+  "Para-Bowling",
+  "Para-Golf"
+)
+
+olympic_winter_sports <- c(
+  "Biathlon",
+  "Bobsleigh",
+  "Curling",
+  "Ice Hockey",
+  "Luge",
+  "Skating",
+  "Skiing",
+  "Ski Mountaineering"
+)
+
+olympic_summer_recent_sports <- c(
+  "Aquatics",
+  "Archery",
+  "Athletics",
+  "Badminton",
+  "Baseball",
+  "Baseball / Softball",
+  "Softball",
+  "Basketball",
+  "Boxing",
+  "Cricket",
+  "Cycling",
+  "DanceSport",
+  "Equestrian",
+  "Fencing",
+  "Field Hockey",
+  "Football",
+  "Golf",
+  "Gymnastics",
+  "Handball",
+  "Judo",
+  "Canoe / Kayak",
+  "Karate",
+  "Lacrosse",
+  "Modern Pentathlon",
+  "Mountaineering and Climbing",
+  "Sport Climbing",
+  "Roller Sports",
+  "Rowing",
+  "Rugby",
+  "Rugby Union",
+  "Other Rugby",
+  "Sailing",
+  "Shooting",
+  "Squash",
+  "Surfing",
+  "Table Tennis",
+  "Taekwondo",
+  "Tennis",
+  "Triathlon",
+  "Volleyball",
+  "Water Skiing",
+  "Weightlifting",
+  "Wrestling",
+  "American Football"
+)
+
+assign_olympic_para_group <- function(sport_name) {
+  case_when(
+    sport_name %in% para_specific_sports ~ "Para-specific sports",
+    sport_name %in% olympic_winter_sports ~ "Olympic winter sports",
+    sport_name %in% olympic_summer_recent_sports ~ "Olympic summer/recent sports",
+    TRUE ~ "Other sports"
+  )
+}
+
+testing <- testing %>%
+  mutate(
+    olympic_para_group = assign_olympic_para_group(sport_clean)
+  )
+
+joined <- joined %>%
+  mutate(
+    olympic_para_group = assign_olympic_para_group(sport_clean)
+  )
+```
+
+### 7.1 Testing volume and AAF risk by Olympic/Paralympic group
+
+This part uses the full WADA testing dataset from 2016 to 2024.
+
+```{r rq7-testing-group-summary, echo=FALSE, message=FALSE, warning=FALSE}
+rq7_testing_group_summary <- testing %>%
+  mutate(
+    total_samples = replace_na(total_samples, 0),
+    aaf_count = replace_na(aaf_count, 0),
+    in_competition_samples = replace_na(in_competition_samples, 0),
+    out_competition_samples = replace_na(out_competition_samples, 0)
+  ) %>%
+  group_by(olympic_para_group) %>%
+  summarise(
+    number_of_sports = n_distinct(sport_clean),
+    total_samples_2016_2024 = sum(total_samples, na.rm = TRUE),
+    total_aafs_2016_2024 = sum(aaf_count, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    testing_share_percent = total_samples_2016_2024 / sum(total_samples_2016_2024) * 100,
+    aaf_share_percent = total_aafs_2016_2024 / sum(total_aafs_2016_2024) * 100,
+    aaf_rate_per_1000_tests = total_aafs_2016_2024 / total_samples_2016_2024 * 1000,
+    in_competition_share_percent = in_competition_samples / total_samples_2016_2024 * 100,
+    out_competition_share_percent = out_competition_samples / total_samples_2016_2024 * 100
+  ) %>%
+  arrange(desc(total_samples_2016_2024))
+
+rq7_testing_group_summary %>%
+  mutate(
+    total_samples_2016_2024 = comma(total_samples_2016_2024),
+    total_aafs_2016_2024 = comma(total_aafs_2016_2024),
+    testing_share_percent = round(testing_share_percent, 2),
+    aaf_share_percent = round(aaf_share_percent, 2),
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2),
+    in_competition_share_percent = round(in_competition_share_percent, 2),
+    out_competition_share_percent = round(out_competition_share_percent, 2)
+  ) %>%
+  knitr::kable(
+    caption = "Testing volume and AAF risk by Olympic/Paralympic sport group, WADA 2016–2024",
+    format = "html",
+    escape = TRUE
+  )
+```
+
+```{r rq7-testing-volume-group-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6, dpi=300}
+rq7_testing_volume_plot <- ggplot(
+  rq7_testing_group_summary,
+  aes(
+    x = reorder(olympic_para_group, -total_samples_2016_2024),
+    y = total_samples_2016_2024
+  )
+) +
+  geom_col(fill = "steelblue", width = 0.7) +
+  geom_text(
+    aes(label = comma(total_samples_2016_2024)),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  scale_y_continuous(
+    labels = comma,
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  labs(
+    title = "Testing Volume by Olympic/Paralympic Sport Group, WADA 2016–2024",
+    x = "Sport group",
+    y = "Total samples/tests"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 25, hjust = 1)
+  )
+
+rq7_testing_volume_plot
+```
+
+```{r rq7-aaf-rate-group-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6, dpi=300}
+rq7_aaf_rate_plot <- ggplot(
+  rq7_testing_group_summary,
+  aes(
+    x = reorder(olympic_para_group, -aaf_rate_per_1000_tests),
+    y = aaf_rate_per_1000_tests
+  )
+) +
+  geom_col(fill = "darkorange", width = 0.7) +
+  geom_text(
+    aes(label = round(aaf_rate_per_1000_tests, 1)),
+    vjust = -0.3,
+    size = 3.5
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  labs(
+    title = "AAF Rate by Olympic/Paralympic Sport Group, WADA 2016–2024",
+    x = "Sport group",
+    y = "AAF rate per 1,000 tests"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 25, hjust = 1)
+  )
+
+rq7_aaf_rate_plot
+```
+
+### 7.2 Confirmed ADRV risk by Olympic/Paralympic group
+
+Because confirmed ADRV data is available up to 2023, this part uses the joined WADA testing and ADRV dataset from 2016 to 2023.
+
+```{r rq7-adrv-group-summary, echo=FALSE, message=FALSE, warning=FALSE}
+rq7_adrv_group_summary <- joined %>%
+  mutate(
+    total_samples = replace_na(total_samples, 0),
+    aaf_count = replace_na(aaf_count, 0),
+    in_competition_samples = replace_na(in_competition_samples, 0),
+    out_competition_samples = replace_na(out_competition_samples, 0),
+    analytical_adrv_count = replace_na(analytical_adrv_count, 0),
+    non_analytical_adrv_count_sport_allocated = replace_na(non_analytical_adrv_count_sport_allocated, 0),
+    total_adrv_count_sport_allocated = replace_na(total_adrv_count_sport_allocated, 0)
+  ) %>%
+  group_by(olympic_para_group) %>%
+  summarise(
+    number_of_sports = n_distinct(sport_clean),
+    total_samples_2016_2023 = sum(total_samples, na.rm = TRUE),
+    total_aafs_2016_2023 = sum(aaf_count, na.rm = TRUE),
+    analytical_adrvs_2016_2023 = sum(analytical_adrv_count, na.rm = TRUE),
+    non_analytical_adrvs_2016_2023 = sum(non_analytical_adrv_count_sport_allocated, na.rm = TRUE),
+    total_adrvs_2016_2023 = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    testing_share_percent = total_samples_2016_2023 / sum(total_samples_2016_2023) * 100,
+    aaf_share_percent = total_aafs_2016_2023 / sum(total_aafs_2016_2023) * 100,
+    adrv_share_percent = total_adrvs_2016_2023 / sum(total_adrvs_2016_2023) * 100,
+    aaf_rate_per_1000_tests = total_aafs_2016_2023 / total_samples_2016_2023 * 1000,
+    total_adrv_rate_per_1000_tests = total_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    out_competition_share_percent = out_competition_samples / total_samples_2016_2023 * 100
+  ) %>%
+  arrange(desc(total_samples_2016_2023))
+
+rq7_adrv_group_summary %>%
+  mutate(
+    total_samples_2016_2023 = comma(total_samples_2016_2023),
+    total_aafs_2016_2023 = comma(total_aafs_2016_2023),
+    total_adrvs_2016_2023 = comma(total_adrvs_2016_2023),
+    testing_share_percent = round(testing_share_percent, 2),
+    aaf_share_percent = round(aaf_share_percent, 2),
+    adrv_share_percent = round(adrv_share_percent, 2),
+    aaf_rate_per_1000_tests = round(aaf_rate_per_1000_tests, 2),
+    total_adrv_rate_per_1000_tests = round(total_adrv_rate_per_1000_tests, 2),
+    out_competition_share_percent = round(out_competition_share_percent, 2)
+  ) %>%
+  knitr::kable(
+    caption = "AAF and ADRV risk by Olympic/Paralympic sport group, WADA 2016–2023",
+    format = "html",
+    escape = TRUE
+  )
+```
+
+```{r rq7-aaf-adrv-rate-group-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6, dpi=300}
+rq7_rate_long <- rq7_adrv_group_summary %>%
+  select(
+    olympic_para_group,
+    aaf_rate_per_1000_tests,
+    total_adrv_rate_per_1000_tests
+  ) %>%
+  pivot_longer(
+    cols = c(aaf_rate_per_1000_tests, total_adrv_rate_per_1000_tests),
+    names_to = "risk_metric",
+    values_to = "rate_per_1000"
+  ) %>%
+  mutate(
+    risk_metric = case_when(
+      risk_metric == "aaf_rate_per_1000_tests" ~ "AAF rate",
+      risk_metric == "total_adrv_rate_per_1000_tests" ~ "ADRV rate",
+      TRUE ~ risk_metric
+    )
+  )
+
+rq7_aaf_adrv_rate_plot <- ggplot(
+  rq7_rate_long,
+  aes(
+    x = olympic_para_group,
+    y = rate_per_1000,
+    fill = risk_metric
+  )
+) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(
+    aes(label = round(rate_per_1000, 1)),
+    position = position_dodge(width = 0.7),
+    vjust = -0.3,
+    size = 3.3
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(
+    title = "AAF and ADRV Rates by Olympic/Paralympic Sport Group",
+    subtitle = "WADA 2016–2023",
+    x = "Sport group",
+    y = "Rate per 1,000 tests",
+    fill = "Risk metric"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    legend.position = "bottom"
+  )
+
+rq7_aaf_adrv_rate_plot
+```
+
+### 7.3 In-competition vs out-of-competition testing by sport group
+
+```{r rq7-ic-ooc-group-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6, dpi=300}
+rq7_ic_ooc_long <- rq7_testing_group_summary %>%
+  select(
+    olympic_para_group,
+    in_competition_samples,
+    out_competition_samples
+  ) %>%
+  pivot_longer(
+    cols = c(in_competition_samples, out_competition_samples),
+    names_to = "testing_type",
+    values_to = "samples"
+  ) %>%
+  mutate(
+    testing_type = case_when(
+      testing_type == "in_competition_samples" ~ "In-competition",
+      testing_type == "out_competition_samples" ~ "Out-of-competition",
+      TRUE ~ testing_type
+    )
+  )
+
+rq7_ic_ooc_plot <- ggplot(
+  rq7_ic_ooc_long,
+  aes(
+    x = olympic_para_group,
+    y = samples,
+    fill = testing_type
+  )
+) +
+  geom_col(width = 0.75) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "In-Competition and Out-of-Competition Testing by Sport Group",
+    subtitle = "WADA 2016–2024",
+    x = "Sport group",
+    y = "Number of samples/tests",
+    fill = "Testing type"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    legend.position = "bottom"
+  )
+
+rq7_ic_ooc_plot
+```
+
+### Observation
+
+The Olympic/Paralympic group analysis shows that global anti-doping testing is strongly concentrated in Olympic summer and recent Olympic sports. From 2016 to 2024, this group accounts for 1,854,363 tests, which is 82.38% of all tests in the dataset. Olympic winter sports account for 8.24%, para-specific sports for 2.76%, and other sports for 6.62%.
+
+However, detected-risk signals do not follow the same order. Olympic summer/recent sports have an AAF rate of 7.38 per 1,000 tests, and Olympic winter sports have a lower AAF rate of 3.28 per 1,000 tests. Para-specific sports have a higher AAF rate of 12.35 per 1,000 tests. The highest AAF rate appears in the “Other sports” group, with 35.97 AAFs per 1,000 tests.
+
+The ADRV results show a similar pattern. From 2016 to 2023, Olympic summer/recent sports account for most confirmed ADRVs in absolute terms because they receive most testing. However, their ADRV rate is 5.39 per 1,000 tests. Other sports have a much higher confirmed ADRV rate of 27.96 per 1,000 tests. Para-specific sports have an ADRV rate of 5.74 per 1,000 tests, slightly higher than Olympic summer/recent sports, while Olympic winter sports have the lowest ADRV rate at 2.22 per 1,000 tests.
+
+Testing strategy also differs by group. Olympic winter sports and para-specific sports have much higher out-of-competition testing shares, around 64% and 61% respectively. Olympic summer/recent sports are almost evenly split between in-competition and out-of-competition testing. Other sports have the lowest out-of-competition share, around 44%.
+
+Overall, RQ7 shows that Olympic status is strongly associated with testing volume, but not necessarily with the highest detected-risk rates. Olympic summer/recent sports dominate global testing resources, while other non-Olympic sports show much higher AAF and ADRV rates. This supports the broader project finding that testing priorities reflect more than detected-risk rates alone; they may also reflect Olympic visibility, sport governance structures, athlete population size, and institutional testing priorities.
+
+
+## Research Question 8: Within Olympic and Paralympic-related sports, which sports show the largest testing-risk mismatch?
+
+The previous section compared Olympic, Paralympic, and non-Olympic sport groups. This section focuses only on Olympic and Paralympic-related sports and asks whether testing priorities are aligned within that sport universe.
+
+The analysis compares each sport's share of testing with its share of detected-risk outcomes. Two mismatch measures are used:
+
+\[
+\text{AAF mismatch} = \text{AAF share} - \text{Testing share}
+\]
+
+\[
+\text{ADRV mismatch} = \text{ADRV share} - \text{Testing share}
+\]
+
+A positive mismatch means that the sport accounts for a larger share of AAFs or ADRVs than its share of testing. A negative mismatch means that the sport receives a larger share of testing than its share of detected-risk outcomes.
+
+```{r rq8-preparation, echo=FALSE, message=FALSE, warning=FALSE}
+# This section assumes that the RQ7 Olympic/Paralympic mapping chunk has already been run.
+# Therefore, testing and joined should already contain the column olympic_para_group.
+if (!"olympic_para_group" %in% names(testing) | !"olympic_para_group" %in% names(joined)) {
+  stop("Please run the RQ7 Olympic/Paralympic mapping chunk before running RQ8.")
+}
+
+min_samples <- 1000
+```
+
+### 8.1 AAF mismatch within Olympic and Paralympic-related sports
+
+This part uses the WADA testing dataset from 2016 to 2024.
+
+```{r rq8-aaf-mismatch, echo=FALSE, message=FALSE, warning=FALSE}
+rq8_aaf_mismatch <- testing %>%
+  filter(olympic_para_group != "Other sports") %>%
+  mutate(
+    total_samples = replace_na(total_samples, 0),
+    aaf_count = replace_na(aaf_count, 0),
+    in_competition_samples = replace_na(in_competition_samples, 0),
+    out_competition_samples = replace_na(out_competition_samples, 0)
+  ) %>%
+  group_by(sport_clean, olympic_para_group) %>%
+  summarise(
+    total_samples_2016_2024 = sum(total_samples, na.rm = TRUE),
+    total_aafs_2016_2024 = sum(aaf_count, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    years_available = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  filter(total_samples_2016_2024 >= min_samples) %>%
+  mutate(
+    testing_share_within_olympic_para = total_samples_2016_2024 / sum(total_samples_2016_2024),
+    aaf_share_within_olympic_para = total_aafs_2016_2024 / sum(total_aafs_2016_2024),
+    aaf_mismatch_pp = (aaf_share_within_olympic_para - testing_share_within_olympic_para) * 100,
+    aaf_rate_per_1000_tests = total_aafs_2016_2024 / total_samples_2016_2024 * 1000,
+    out_competition_share = out_competition_samples / total_samples_2016_2024
+  )
+
+rq8_aaf_mismatch %>%
+  summarise(
+    sports_included = n(),
+    total_samples = sum(total_samples_2016_2024),
+    total_aafs = sum(total_aafs_2016_2024)
+  )
+```
+
+```{r rq8-aaf-positive-table, echo=FALSE, message=FALSE, warning=FALSE}
+rq8_top_positive_aaf <- rq8_aaf_mismatch %>%
+  arrange(desc(aaf_mismatch_pp)) %>%
+  slice_head(n = 10)
+
+rq8_top_positive_aaf %>%
+  transmute(
+    Sport = sport_clean,
+    Group = olympic_para_group,
+    `Total samples` = comma(total_samples_2016_2024),
+    `Total AAFs` = comma(total_aafs_2016_2024),
+    `Testing share (%)` = round(testing_share_within_olympic_para * 100, 2),
+    `AAF share (%)` = round(aaf_share_within_olympic_para * 100, 2),
+    `AAF mismatch pp` = round(aaf_mismatch_pp, 2),
+    `AAF rate / 1,000` = round(aaf_rate_per_1000_tests, 2)
+  ) %>%
+  knitr::kable(
+    caption = "Top positive AAF mismatch sports within Olympic/Paralympic-related sports, WADA 2016–2024"
+  )
+```
+
+```{r rq8-aaf-negative-table, echo=FALSE, message=FALSE, warning=FALSE}
+rq8_top_negative_aaf <- rq8_aaf_mismatch %>%
+  arrange(aaf_mismatch_pp) %>%
+  slice_head(n = 10)
+
+rq8_top_negative_aaf %>%
+  transmute(
+    Sport = sport_clean,
+    Group = olympic_para_group,
+    `Total samples` = comma(total_samples_2016_2024),
+    `Total AAFs` = comma(total_aafs_2016_2024),
+    `Testing share (%)` = round(testing_share_within_olympic_para * 100, 2),
+    `AAF share (%)` = round(aaf_share_within_olympic_para * 100, 2),
+    `AAF mismatch pp` = round(aaf_mismatch_pp, 2),
+    `AAF rate / 1,000` = round(aaf_rate_per_1000_tests, 2)
+  ) %>%
+  knitr::kable(
+    caption = "Top negative AAF mismatch sports within Olympic/Paralympic-related sports, WADA 2016–2024"
+  )
+```
+
+```{r rq8-aaf-mismatch-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, dpi=300}
+rq8_aaf_bar_data <- bind_rows(
+  rq8_top_positive_aaf %>% mutate(mismatch_type = "Positive AAF mismatch"),
+  rq8_top_negative_aaf %>% mutate(mismatch_type = "Negative AAF mismatch")
+) %>%
+  mutate(
+    sport_clean = fct_reorder(sport_clean, aaf_mismatch_pp)
+  )
+
+rq8_aaf_mismatch_plot <- ggplot(
+  rq8_aaf_bar_data,
+  aes(
+    x = aaf_mismatch_pp,
+    y = sport_clean,
+    fill = mismatch_type
+  )
+) +
+  geom_col(width = 0.7) +
+  geom_vline(xintercept = 0, linewidth = 0.8) +
+  geom_text(
+    aes(label = round(aaf_mismatch_pp, 2)),
+    hjust = ifelse(rq8_aaf_bar_data$aaf_mismatch_pp > 0, -0.15, 1.15),
+    size = 3.4
+  ) +
+  scale_x_continuous(
+    labels = label_number(suffix = " pp"),
+    expand = expansion(mult = c(0.15, 0.15))
+  ) +
+  labs(
+    title = "AAF Testing–Risk Mismatch within Olympic/Paralympic-Related Sports",
+    subtitle = "WADA 2016–2024",
+    x = "AAF mismatch in percentage points",
+    y = "Sport",
+    fill = "Mismatch type"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+rq8_aaf_mismatch_plot
+```
+
+### 8.2 ADRV mismatch within Olympic and Paralympic-related sports
+
+This part uses the joined WADA testing and ADRV dataset from 2016 to 2023.
+
+```{r rq8-adrv-mismatch, echo=FALSE, message=FALSE, warning=FALSE}
+rq8_adrv_mismatch <- joined %>%
+  filter(olympic_para_group != "Other sports") %>%
+  mutate(
+    total_samples = replace_na(total_samples, 0),
+    aaf_count = replace_na(aaf_count, 0),
+    total_adrv_count_sport_allocated = replace_na(total_adrv_count_sport_allocated, 0),
+    in_competition_samples = replace_na(in_competition_samples, 0),
+    out_competition_samples = replace_na(out_competition_samples, 0)
+  ) %>%
+  group_by(sport_clean, olympic_para_group) %>%
+  summarise(
+    total_samples_2016_2023 = sum(total_samples, na.rm = TRUE),
+    testing_aafs_2016_2023 = sum(aaf_count, na.rm = TRUE),
+    total_adrvs_2016_2023 = sum(total_adrv_count_sport_allocated, na.rm = TRUE),
+    in_competition_samples = sum(in_competition_samples, na.rm = TRUE),
+    out_competition_samples = sum(out_competition_samples, na.rm = TRUE),
+    years_available = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  filter(total_samples_2016_2023 >= min_samples) %>%
+  mutate(
+    testing_share_within_olympic_para = total_samples_2016_2023 / sum(total_samples_2016_2023),
+    adrv_share_within_olympic_para = total_adrvs_2016_2023 / sum(total_adrvs_2016_2023),
+    adrv_mismatch_pp = (adrv_share_within_olympic_para - testing_share_within_olympic_para) * 100,
+    adrv_rate_per_1000_tests = total_adrvs_2016_2023 / total_samples_2016_2023 * 1000,
+    out_competition_share = out_competition_samples / total_samples_2016_2023
+  )
+
+rq8_adrv_mismatch %>%
+  summarise(
+    sports_included = n(),
+    total_samples = sum(total_samples_2016_2023),
+    total_adrvs = sum(total_adrvs_2016_2023)
+  )
+```
+
+```{r rq8-adrv-positive-table, echo=FALSE, message=FALSE, warning=FALSE}
+rq8_top_positive_adrv <- rq8_adrv_mismatch %>%
+  arrange(desc(adrv_mismatch_pp)) %>%
+  slice_head(n = 10)
+
+rq8_top_positive_adrv %>%
+  transmute(
+    Sport = sport_clean,
+    Group = olympic_para_group,
+    `Total samples` = comma(total_samples_2016_2023),
+    `Total ADRVs` = comma(total_adrvs_2016_2023),
+    `Testing share (%)` = round(testing_share_within_olympic_para * 100, 2),
+    `ADRV share (%)` = round(adrv_share_within_olympic_para * 100, 2),
+    `ADRV mismatch pp` = round(adrv_mismatch_pp, 2),
+    `ADRV rate / 1,000` = round(adrv_rate_per_1000_tests, 2)
+  ) %>%
+  knitr::kable(
+    caption = "Top positive ADRV mismatch sports within Olympic/Paralympic-related sports, WADA 2016–2023"
+  )
+```
+
+```{r rq8-adrv-negative-table, echo=FALSE, message=FALSE, warning=FALSE}
+rq8_top_negative_adrv <- rq8_adrv_mismatch %>%
+  arrange(adrv_mismatch_pp) %>%
+  slice_head(n = 10)
+
+rq8_top_negative_adrv %>%
+  transmute(
+    Sport = sport_clean,
+    Group = olympic_para_group,
+    `Total samples` = comma(total_samples_2016_2023),
+    `Total ADRVs` = comma(total_adrvs_2016_2023),
+    `Testing share (%)` = round(testing_share_within_olympic_para * 100, 2),
+    `ADRV share (%)` = round(adrv_share_within_olympic_para * 100, 2),
+    `ADRV mismatch pp` = round(adrv_mismatch_pp, 2),
+    `ADRV rate / 1,000` = round(adrv_rate_per_1000_tests, 2)
+  ) %>%
+  knitr::kable(
+    caption = "Top negative ADRV mismatch sports within Olympic/Paralympic-related sports, WADA 2016–2023"
+  )
+```
+
+```{r rq8-adrv-mismatch-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=7, dpi=300}
+rq8_adrv_bar_data <- bind_rows(
+  rq8_top_positive_adrv %>% mutate(mismatch_type = "Positive ADRV mismatch"),
+  rq8_top_negative_adrv %>% mutate(mismatch_type = "Negative ADRV mismatch")
+) %>%
+  mutate(
+    sport_clean = fct_reorder(sport_clean, adrv_mismatch_pp)
+  )
+
+rq8_adrv_mismatch_plot <- ggplot(
+  rq8_adrv_bar_data,
+  aes(
+    x = adrv_mismatch_pp,
+    y = sport_clean,
+    fill = mismatch_type
+  )
+) +
+  geom_col(width = 0.7) +
+  geom_vline(xintercept = 0, linewidth = 0.8) +
+  geom_text(
+    aes(label = round(adrv_mismatch_pp, 2)),
+    hjust = ifelse(rq8_adrv_bar_data$adrv_mismatch_pp > 0, -0.15, 1.15),
+    size = 3.4
+  ) +
+  scale_x_continuous(
+    labels = label_number(suffix = " pp"),
+    expand = expansion(mult = c(0.15, 0.15))
+  ) +
+  labs(
+    title = "ADRV Testing–Risk Mismatch within Olympic/Paralympic-Related Sports",
+    subtitle = "WADA 2016–2023",
+    x = "ADRV mismatch in percentage points",
+    y = "Sport",
+    fill = "Mismatch type"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+rq8_adrv_mismatch_plot
+```
+
+### 8.3 Combined Olympic/Paralympic mismatch interpretation
+
+```{r rq8-combined-table, echo=FALSE, message=FALSE, warning=FALSE}
+rq8_aaf_for_join <- rq8_aaf_mismatch %>%
+  select(
+    sport_clean,
+    olympic_para_group,
+    total_samples_2016_2024,
+    total_aafs_2016_2024,
+    aaf_mismatch_pp,
+    aaf_rate_per_1000_tests
+  )
+
+rq8_adrv_for_join <- rq8_adrv_mismatch %>%
+  select(
+    sport_clean,
+    total_samples_2016_2023,
+    total_adrvs_2016_2023,
+    adrv_mismatch_pp,
+    adrv_rate_per_1000_tests
+  )
+
+rq8_combined_mismatch <- rq8_aaf_for_join %>%
+  left_join(rq8_adrv_for_join, by = "sport_clean") %>%
+  mutate(
+    mismatch_interpretation = case_when(
+      !is.na(adrv_mismatch_pp) & aaf_mismatch_pp >= 1 & adrv_mismatch_pp >= 1 ~
+        "Higher risk share than testing share on both AAF and ADRV",
+      !is.na(adrv_mismatch_pp) & aaf_mismatch_pp <= -1 & adrv_mismatch_pp <= -1 ~
+        "Testing share exceeds both AAF and ADRV shares",
+      !is.na(adrv_mismatch_pp) & aaf_mismatch_pp >= 1 & adrv_mismatch_pp < 1 ~
+        "AAF-positive mismatch; ADRV closer or lower",
+      !is.na(adrv_mismatch_pp) & adrv_mismatch_pp >= 1 & aaf_mismatch_pp < 1 ~
+        "ADRV-positive mismatch; AAF closer or lower",
+      is.na(adrv_mismatch_pp) & aaf_mismatch_pp >= 1 ~
+        "Higher AAF share than testing share",
+      is.na(adrv_mismatch_pp) & aaf_mismatch_pp <= -1 ~
+        "Lower AAF share than testing share",
+      TRUE ~ "Broadly aligned or mixed"
+    )
+  )
+
+rq8_key_combined_table <- rq8_combined_mismatch %>%
+  filter(
+    abs(aaf_mismatch_pp) >= 1 |
+      abs(adrv_mismatch_pp) >= 1
+  ) %>%
+  arrange(desc(aaf_mismatch_pp)) %>%
+  transmute(
+    Sport = sport_clean,
+    Group = olympic_para_group,
+    `AAF mismatch pp` = round(aaf_mismatch_pp, 2),
+    `ADRV mismatch pp` = round(adrv_mismatch_pp, 2),
+    `AAF rate / 1,000` = round(aaf_rate_per_1000_tests, 2),
+    `ADRV rate / 1,000` = round(adrv_rate_per_1000_tests, 2),
+    Interpretation = mismatch_interpretation
+  )
+
+rq8_key_combined_table %>%
+  knitr::kable(
+    caption = "Combined AAF and ADRV mismatch interpretation for key Olympic/Paralympic-related sports",
+    format = "html",
+    escape = TRUE
+  )
+```
+
+### Observation
+
+Within Olympic and Paralympic-related sports, testing and detected-risk signals are not evenly aligned.
+
+For AAF-based mismatch from 2016 to 2024, the strongest positive mismatch appears in Weightlifting. Weightlifting accounts for a larger share of AAFs than its share of testing within the Olympic/Paralympic-related sport group. Cycling, Wrestling, Boxing, Athletics, American Football, and Baseball / Softball also show positive AAF mismatch. This means these sports produce more AAFs than expected based on their testing share within this sport universe.
+
+The strongest negative AAF mismatch appears in Football. Football receives the largest share of testing among Olympic/Paralympic-related sports, but its AAF share is much lower than its testing share. Skiing, Aquatics, Tennis, Skating, Biathlon, and Rowing also show negative AAF mismatch, suggesting lower AAF yield relative to their testing volume.
+
+The ADRV-based mismatch from 2016 to 2023 confirms several of the same patterns. Weightlifting, Athletics, Cycling, Wrestling, and Boxing all have positive ADRV mismatch, meaning their share of confirmed violations is higher than their share of testing. These sports therefore show consistent detected-risk signals across both AAF and ADRV measures.
+
+In contrast, Football, Aquatics, Skiing, Tennis, and Skating show negative mismatch on both AAF and ADRV measures. These sports are heavily tested within the Olympic/Paralympic-related sport group, but their detected-risk shares are lower than their testing shares.
+
+Overall, RQ8 strengthens the main project conclusion. Even when the analysis is restricted to Olympic and Paralympic-related sports, testing priorities are only partly aligned with detected risk. Strength, combat, and endurance-related sports such as Weightlifting, Wrestling, Boxing, Cycling, and Athletics show stronger detected-risk signals, while highly visible sports such as Football and Aquatics receive large testing shares but show lower AAF and ADRV yield relative to testing volume.
+
